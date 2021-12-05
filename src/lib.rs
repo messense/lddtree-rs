@@ -27,6 +27,8 @@ pub struct DependencyTree {
     pub interpreter: Option<String>,
     pub needed: Vec<String>,
     pub libraries: HashMap<String, Library>,
+    pub rpath: Vec<String>,
+    pub runpath: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,16 +75,20 @@ impl DependencyAnalyzer {
             // If both RPATH and RUNPATH are set, only the latter is used.
             rpaths = Vec::new();
         }
-        self.runpaths = runpaths;
-        self.runpaths.extend(rpaths);
+        self.runpaths = runpaths.clone();
+        self.runpaths.extend(rpaths.clone());
 
-        let mut needed = Vec::new();
+        let needed: Vec<String> = elf.libraries.iter().map(ToString::to_string).collect();
         let mut libraries = HashMap::new();
 
-        for lib_name in &elf.libraries {
-            needed.push(lib_name.to_string());
-            if let Some(library) = self.find_library(&elf, lib_name)? {
-                libraries.insert(lib_name.to_string(), library);
+        let mut stack = needed.clone();
+        while let Some(lib_name) = stack.pop() {
+            if libraries.contains_key(&lib_name) {
+                continue;
+            }
+            if let Some(library) = self.find_library(&elf, &lib_name)? {
+                libraries.insert(lib_name, library.clone());
+                stack.extend(library.needed);
             } else {
                 // TODO: return error
             }
@@ -104,6 +110,8 @@ impl DependencyAnalyzer {
             interpreter,
             needed,
             libraries,
+            rpath: rpaths,
+            runpath: runpaths,
         };
         Ok(dep_tree)
     }
