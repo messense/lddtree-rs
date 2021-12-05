@@ -1,4 +1,4 @@
-use lddtree::parse_ldsoconf;
+use lddtree::ld_so_conf::parse_ldsoconf;
 
 #[test]
 fn test_parse_ldsoconf() {

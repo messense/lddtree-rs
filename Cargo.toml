@@ -6,5 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+fs-err = "2.6.0"
 glob = "0.3.0"
 goblin = "0.4.3"
