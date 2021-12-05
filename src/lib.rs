@@ -1,3 +1,7 @@
+//! Read the ELF dependency tree.
+//!
+//! This does not work like `ldd` in that we do not execute/load code (only read
+//! files on disk).
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -16,21 +20,31 @@ pub mod ld_so_conf;
 pub use errors::Error;
 use ld_so_conf::parse_ldsoconf;
 
+/// A library dependency
 #[derive(Debug, Clone)]
 pub struct Library {
+    /// The path to the library.
     pub path: PathBuf,
+    /// The dependencies of this library.
     pub needed: Vec<String>,
 }
 
+/// Library dependency tree
 #[derive(Debug, Clone)]
 pub struct DependencyTree {
+    /// The binary’s program interpreter (e.g., dynamic linker).
     pub interpreter: Option<String>,
+    /// A list of this binary’s dynamic libraries it depends on directly.
     pub needed: Vec<String>,
+    /// All of this binary’s dynamic libraries it uses in detail.
     pub libraries: HashMap<String, Library>,
+    /// Runtime library search paths. (deprecated)
     pub rpath: Vec<String>,
+    /// Runtime library search paths.
     pub runpath: Vec<String>,
 }
 
+/// Library dependency analyzer
 #[derive(Debug, Clone)]
 pub struct DependencyAnalyzer {
     env_ld_paths: Vec<String>,
@@ -39,6 +53,7 @@ pub struct DependencyAnalyzer {
 }
 
 impl DependencyAnalyzer {
+    /// Create a new dependency analyzer.
     pub fn new() -> DependencyAnalyzer {
         DependencyAnalyzer {
             env_ld_paths: Vec::new(),
@@ -47,6 +62,7 @@ impl DependencyAnalyzer {
         }
     }
 
+    /// Analyze the given binary.
     pub fn analyze(&mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
         let path = path.as_ref();
         self.load_ld_paths(path)?;
