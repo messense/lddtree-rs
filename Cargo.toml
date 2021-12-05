@@ -2,6 +2,11 @@
 name = "lddtree"
 version = "0.1.0"
 edition = "2021"
+description = "Read the ELF dependency tree"
+license = "MIT"
+keywords = ["ldd", "elf"]
+readme = "README.md"
+repository = "https://github.com/messense/lddtree-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
