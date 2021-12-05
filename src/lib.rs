@@ -176,7 +176,7 @@ impl DependencyAnalyzer {
                 if compatible_elfs(elf, &lib_elf) {
                     let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
                     return Ok(Some(Library {
-                        path: lib_path,
+                        path: lib_path.canonicalize()?,
                         needed,
                     }));
                 }
@@ -190,16 +190,17 @@ impl DependencyAnalyzer {
 fn parse_ld_paths(ld_path: &str, elf_path: &Path) -> Result<Vec<String>, Error> {
     let mut paths = Vec::new();
     for path in ld_path.split(':') {
-        if path.is_empty() {
+        let normpath = if path.is_empty() {
             // The ldso treats empty paths as the current directory
-            paths.push(env::current_dir()?.to_str().unwrap().to_string());
+            env::current_dir()?
         } else if path.contains("$ORIGIN") {
-            if let Some(elf_dir) = elf_path.canonicalize()?.parent() {
-                paths.push(path.replace("$ORIGIN", elf_dir.to_str().unwrap()));
-            }
+            let elf_path = elf_path.canonicalize()?;
+            let elf_dir = elf_path.parent().expect("no parent");
+            PathBuf::from(path.replace("$ORIGIN", elf_dir.to_str().unwrap())).canonicalize()?
         } else {
-            paths.push(path.to_string());
-        }
+            Path::new(path).canonicalize()?
+        };
+        paths.push(normpath.display().to_string());
     }
     Ok(paths)
 }
