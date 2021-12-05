@@ -56,7 +56,7 @@ pub fn parse_ldsoconf(path: impl AsRef<Path>) -> Result<Vec<String>, LdSoConfErr
         if line.starts_with("#") {
             continue;
         }
-        if line.starts_with("include") {
+        if line.starts_with("include ") {
             let include_path = line
                 .split_whitespace()
                 .skip(1)
