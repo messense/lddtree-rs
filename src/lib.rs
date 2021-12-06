@@ -25,8 +25,17 @@ use ld_so_conf::parse_ldsoconf;
 pub struct Library {
     /// The path to the library.
     pub path: PathBuf,
+    /// The normalized real path to the library.
+    pub realpath: Option<PathBuf>,
     /// The dependencies of this library.
     pub needed: Vec<String>,
+}
+
+impl Library {
+    /// Is this library found in filesystem.
+    pub fn found(&self) -> bool {
+        self.realpath.is_some()
+    }
 }
 
 /// Library dependency tree
@@ -78,11 +87,15 @@ impl DependencyAnalyzer {
             for dyn_ in &dynamic.dyns {
                 if dyn_.d_tag == DT_RUNPATH {
                     if let Some(runpath) = dynstrtab.get_at(dyn_.d_val as usize) {
-                        runpaths = parse_ld_paths(runpath, path)?;
+                        if let Ok(ld_paths) = parse_ld_paths(runpath, path) {
+                            runpaths = ld_paths;
+                        }
                     }
                 } else if dyn_.d_tag == DT_RPATH {
                     if let Some(rpath) = dynstrtab.get_at(dyn_.d_val as usize) {
-                        rpaths = parse_ld_paths(rpath, path)?;
+                        if let Ok(ld_paths) = parse_ld_paths(rpath, path) {
+                            rpaths = ld_paths;
+                        }
                     }
                 }
             }
@@ -117,6 +130,7 @@ impl DependencyAnalyzer {
                     interp.to_string(),
                     Library {
                         path: PathBuf::from(interp),
+                        realpath: PathBuf::from(interp).canonicalize().ok(),
                         needed: Vec::new(),
                     },
                 );
@@ -192,13 +206,18 @@ impl DependencyAnalyzer {
                 if compatible_elfs(elf, &lib_elf) {
                     let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
                     return Ok(Some(Library {
-                        path: lib_path.canonicalize()?,
+                        path: lib_path.to_path_buf(),
+                        realpath: lib_path.canonicalize().ok(),
                         needed,
                     }));
                 }
             }
         }
-        Ok(None)
+        Ok(Some(Library {
+            path: PathBuf::from(lib),
+            realpath: None,
+            needed: Vec::new(),
+        }))
     }
 }
 
