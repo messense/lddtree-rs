@@ -228,10 +228,14 @@ fn parse_ld_paths(ld_path: &str, elf_path: &Path) -> Result<Vec<String>, Error> 
         let normpath = if path.is_empty() {
             // The ldso treats empty paths as the current directory
             env::current_dir()?
-        } else if path.contains("$ORIGIN") {
+        } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
             let elf_path = elf_path.canonicalize()?;
             let elf_dir = elf_path.parent().expect("no parent");
-            PathBuf::from(path.replace("$ORIGIN", elf_dir.to_str().unwrap())).canonicalize()?
+            let replacement = elf_dir.to_str().unwrap();
+            let path = path
+                .replace("${ORIGIN}", replacement)
+                .replace("$ORIGIN", replacement);
+            PathBuf::from(path).canonicalize()?
         } else {
             Path::new(path).canonicalize()?
         };
