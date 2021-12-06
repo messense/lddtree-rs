@@ -72,7 +72,7 @@ impl DependencyAnalyzer {
     }
 
     /// Analyze the given binary.
-    pub fn analyze(&mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
+    pub fn analyze(mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
         let path = path.as_ref();
         self.load_ld_paths(path)?;
 

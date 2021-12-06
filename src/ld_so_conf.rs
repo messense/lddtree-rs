@@ -51,6 +51,7 @@ impl From<glob::GlobError> for LdSoConfError {
 
 /// Parse the `ld.so.conf` file on Linux
 pub fn parse_ldsoconf(path: impl AsRef<Path>) -> Result<Vec<String>, LdSoConfError> {
+    let path = path.as_ref();
     let conf = fs::read_to_string(path)?;
     let mut paths = Vec::new();
     for line in conf.lines() {
@@ -58,12 +59,14 @@ pub fn parse_ldsoconf(path: impl AsRef<Path>) -> Result<Vec<String>, LdSoConfErr
             continue;
         }
         if line.starts_with("include ") {
-            let include_path = line
-                .split_whitespace()
-                .skip(1)
-                .next()
-                .ok_or_else(|| LdSoConfError::InvalidIncludeDirective(line.to_string()))?;
-            for path in glob::glob(include_path).map_err(|err| {
+            let include_path = &line[8..];
+            let include_path = if !include_path.starts_with('/') {
+                let parent = path.parent().unwrap();
+                format!("{}/{}", parent.display(), include_path)
+            } else {
+                include_path.to_string()
+            };
+            for path in glob::glob(&include_path).map_err(|err| {
                 LdSoConfError::InvalidIncludeDirective(format!("{} in '{}'", err, line))
             })? {
                 let path = path?;
