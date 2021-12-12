@@ -23,6 +23,8 @@ use ld_so_conf::parse_ldsoconf;
 /// A library dependency
 #[derive(Debug, Clone)]
 pub struct Library {
+    /// Library name
+    pub name: String,
     /// The path to the library.
     pub path: PathBuf,
     /// The normalized real path to the library.
@@ -140,10 +142,17 @@ impl DependencyAnalyzer {
         let interpreter = elf.interpreter.map(|interp| interp.to_string());
         if let Some(ref interp) = interpreter {
             if !libraries.contains_key(interp) {
+                let interp_path = PathBuf::from(interp);
+                let interp_name = interp_path
+                    .file_name()
+                    .expect("missing filename")
+                    .to_str()
+                    .expect("Filename isn't valid Unicode");
                 libraries.insert(
                     interp.to_string(),
                     Library {
-                        path: PathBuf::from(interp),
+                        name: interp_name.to_string(),
+                        path: interp_path,
                         realpath: PathBuf::from(interp).canonicalize().ok(),
                         needed: Vec::new(),
                         rpath: Vec::new(),
@@ -206,7 +215,7 @@ impl DependencyAnalyzer {
         Ok(())
     }
 
-    /// Try to locate a `lib` taht is compatible to `elf`
+    /// Try to locate a `lib` that is compatible to `elf`
     fn find_library(&self, elf: &Elf, lib: &str) -> Result<Option<Library>, Error> {
         for ld_path in self
             .runpaths
@@ -223,6 +232,7 @@ impl DependencyAnalyzer {
                     let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
                     let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path, &bytes)?;
                     return Ok(Some(Library {
+                        name: lib.to_string(),
                         path: lib_path.to_path_buf(),
                         realpath: lib_path.canonicalize().ok(),
                         needed,
@@ -233,6 +243,7 @@ impl DependencyAnalyzer {
             }
         }
         Ok(Some(Library {
+            name: lib.to_string(),
             path: PathBuf::from(lib),
             realpath: None,
             needed: Vec::new(),
