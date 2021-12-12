@@ -29,6 +29,10 @@ pub struct Library {
     pub realpath: Option<PathBuf>,
     /// The dependencies of this library.
     pub needed: Vec<String>,
+    /// Runtime library search paths. (deprecated)
+    pub rpath: Vec<String>,
+    /// Runtime library search paths.
+    pub runpath: Vec<String>,
 }
 
 impl Library {
@@ -71,14 +75,12 @@ impl DependencyAnalyzer {
         }
     }
 
-    /// Analyze the given binary.
-    pub fn analyze(mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
-        let path = path.as_ref();
-        self.load_ld_paths(path)?;
-
-        let bytes = fs::read(path)?;
-        let elf = Elf::parse(&bytes)?;
-
+    fn read_rpath_runpath(
+        &self,
+        elf: &Elf,
+        path: &Path,
+        bytes: &[u8],
+    ) -> Result<(Vec<String>, Vec<String>), Error> {
         let mut rpaths = Vec::new();
         let mut runpaths = Vec::new();
         if let Some(dynamic) = &elf.dynamic {
@@ -100,6 +102,18 @@ impl DependencyAnalyzer {
                 }
             }
         }
+        Ok((rpaths, runpaths))
+    }
+
+    /// Analyze the given binary.
+    pub fn analyze(mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
+        let path = path.as_ref();
+        self.load_ld_paths(path)?;
+
+        let bytes = fs::read(path)?;
+        let elf = Elf::parse(&bytes)?;
+
+        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path, &bytes)?;
         if !runpaths.is_empty() {
             // If both RPATH and RUNPATH are set, only the latter is used.
             rpaths = Vec::new();
@@ -132,6 +146,8 @@ impl DependencyAnalyzer {
                         path: PathBuf::from(interp),
                         realpath: PathBuf::from(interp).canonicalize().ok(),
                         needed: Vec::new(),
+                        rpath: Vec::new(),
+                        runpath: Vec::new(),
                     },
                 );
             }
@@ -205,10 +221,13 @@ impl DependencyAnalyzer {
                 let lib_elf = Elf::parse(&bytes)?;
                 if compatible_elfs(elf, &lib_elf) {
                     let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
+                    let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path, &bytes)?;
                     return Ok(Some(Library {
                         path: lib_path.to_path_buf(),
                         realpath: lib_path.canonicalize().ok(),
                         needed,
+                        rpath,
+                        runpath,
                     }));
                 }
             }
@@ -217,6 +236,8 @@ impl DependencyAnalyzer {
             path: PathBuf::from(lib),
             realpath: None,
             needed: Vec::new(),
+            rpath: Vec::new(),
+            runpath: Vec::new(),
         }))
     }
 }
