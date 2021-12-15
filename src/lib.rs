@@ -131,12 +131,9 @@ impl DependencyAnalyzer {
             if libraries.contains_key(&lib_name) {
                 continue;
             }
-            if let Some(library) = self.find_library(&elf, &lib_name)? {
-                libraries.insert(lib_name, library.clone());
-                stack.extend(library.needed);
-            } else {
-                // TODO: return error
-            }
+            let library = self.find_library(&elf, &lib_name)?;
+            libraries.insert(lib_name, library.clone());
+            stack.extend(library.needed);
         }
 
         let interpreter = elf.interpreter.map(|interp| interp.to_string());
@@ -216,7 +213,7 @@ impl DependencyAnalyzer {
     }
 
     /// Try to locate a `lib` that is compatible to `elf`
-    fn find_library(&self, elf: &Elf, lib: &str) -> Result<Option<Library>, Error> {
+    fn find_library(&self, elf: &Elf, lib: &str) -> Result<Library, Error> {
         for ld_path in self
             .runpaths
             .iter()
@@ -231,25 +228,25 @@ impl DependencyAnalyzer {
                 if compatible_elfs(elf, &lib_elf) {
                     let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
                     let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path, &bytes)?;
-                    return Ok(Some(Library {
+                    return Ok(Library {
                         name: lib.to_string(),
                         path: lib_path.to_path_buf(),
                         realpath: lib_path.canonicalize().ok(),
                         needed,
                         rpath,
                         runpath,
-                    }));
+                    });
                 }
             }
         }
-        Ok(Some(Library {
+        Ok(Library {
             name: lib.to_string(),
             path: PathBuf::from(lib),
             realpath: None,
             needed: Vec::new(),
             rpath: Vec::new(),
             runpath: Vec::new(),
-        }))
+        })
     }
 }
 
