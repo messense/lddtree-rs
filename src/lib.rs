@@ -169,6 +169,7 @@ impl DependencyAnalyzer {
     }
 
     fn load_ld_paths(&mut self, elf_path: &Path) -> Result<(), Error> {
+        #[cfg(unix)]
         if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
             self.env_ld_paths = parse_ld_paths(&env_ld_path, elf_path)?;
         }
