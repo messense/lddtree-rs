@@ -1,6 +1,6 @@
 [package]
 name = "lddtree"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2018"
 description = "Read the ELF dependency tree"
 license = "MIT"
