@@ -2,7 +2,7 @@ use lddtree::DependencyAnalyzer;
 
 #[test]
 fn test_lddtree() {
-    let analyzer = DependencyAnalyzer::new();
+    let analyzer = DependencyAnalyzer::default();
     let deps = analyzer.analyze("tests/test.elf").unwrap();
     assert_eq!(
         deps.interpreter.as_deref(),

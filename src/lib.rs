@@ -18,7 +18,7 @@ mod errors;
 pub mod ld_so_conf;
 
 pub use errors::Error;
-use ld_so_conf::parse_ldsoconf;
+use ld_so_conf::parse_ld_so_conf;
 
 /// A library dependency
 #[derive(Debug, Clone)]
@@ -65,15 +65,23 @@ pub struct DependencyAnalyzer {
     env_ld_paths: Vec<String>,
     conf_ld_paths: Vec<String>,
     runpaths: Vec<String>,
+    root: PathBuf,
+}
+
+impl Default for DependencyAnalyzer {
+    fn default() -> Self {
+        Self::new(PathBuf::from("/"))
+    }
 }
 
 impl DependencyAnalyzer {
     /// Create a new dependency analyzer.
-    pub fn new() -> DependencyAnalyzer {
+    pub fn new(root: PathBuf) -> DependencyAnalyzer {
         DependencyAnalyzer {
             env_ld_paths: Vec::new(),
             conf_ld_paths: Vec::new(),
             runpaths: Vec::new(),
+            root,
         }
     }
 
@@ -91,13 +99,13 @@ impl DependencyAnalyzer {
             for dyn_ in &dynamic.dyns {
                 if dyn_.d_tag == DT_RUNPATH {
                     if let Some(runpath) = dynstrtab.get_at(dyn_.d_val as usize) {
-                        if let Ok(ld_paths) = parse_ld_paths(runpath, path) {
+                        if let Ok(ld_paths) = self.parse_ld_paths(runpath, path) {
                             runpaths = ld_paths;
                         }
                     }
                 } else if dyn_.d_tag == DT_RPATH {
                     if let Some(rpath) = dynstrtab.get_at(dyn_.d_val as usize) {
-                        if let Ok(ld_paths) = parse_ld_paths(rpath, path) {
+                        if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
                             rpaths = ld_paths;
                         }
                     }
@@ -139,7 +147,7 @@ impl DependencyAnalyzer {
         let interpreter = elf.interpreter.map(|interp| interp.to_string());
         if let Some(ref interp) = interpreter {
             if !libraries.contains_key(interp) {
-                let interp_path = PathBuf::from(interp);
+                let interp_path = self.root.join(interp.strip_prefix('/').unwrap_or(interp));
                 let interp_name = interp_path
                     .file_name()
                     .expect("missing filename")
@@ -168,23 +176,54 @@ impl DependencyAnalyzer {
         Ok(dep_tree)
     }
 
+    /// Parse the colon-delimited list of paths and apply ldso rules
+    fn parse_ld_paths(&self, ld_path: &str, elf_path: &Path) -> Result<Vec<String>, Error> {
+        let mut paths = Vec::new();
+        for path in ld_path.split(':') {
+            let normpath = if path.is_empty() {
+                // The ldso treats empty paths as the current directory
+                env::current_dir()?
+            } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
+                let elf_path = elf_path.canonicalize()?;
+                let elf_dir = elf_path.parent().expect("no parent");
+                let replacement = elf_dir.to_str().unwrap();
+                let path = path
+                    .replace("${ORIGIN}", replacement)
+                    .replace("$ORIGIN", replacement);
+                PathBuf::from(path).canonicalize()?
+            } else {
+                self.root
+                    .join(path.strip_prefix('/').unwrap_or(path))
+                    .canonicalize()?
+            };
+            paths.push(normpath.display().to_string());
+        }
+        Ok(paths)
+    }
+
     fn load_ld_paths(&mut self, elf_path: &Path) -> Result<(), Error> {
         #[cfg(unix)]
         if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
-            self.env_ld_paths = parse_ld_paths(&env_ld_path, elf_path)?;
+            if self.root == Path::new("/") {
+                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, elf_path)?;
+            }
         }
         // Load all the paths from a ldso config file
         match find_musl_libc() {
             // musl libc
             Ok(Some(_musl_libc)) => {
                 // from https://git.musl-libc.org/cgit/musl/tree/ldso/dynlink.c?id=3f701faace7addc75d16dea8a6cd769fa5b3f260#n1063
-                for entry in glob::glob("/etc/ld-musl-*.path").expect("invalid glob pattern") {
+                let root_str = self.root.display().to_string();
+                let root_str = root_str.strip_suffix("/").unwrap_or(&root_str);
+                let pattern = format!("{}/etc/ld-musl-*.path", root_str);
+                for entry in glob::glob(&pattern).expect("invalid glob pattern") {
                     if let Ok(entry) = entry {
                         let content = fs::read_to_string(&entry)?;
                         for line in content.lines() {
                             let line_stripped = line.trim();
                             if !line_stripped.is_empty() {
-                                self.conf_ld_paths.push(line_stripped.to_string());
+                                self.conf_ld_paths
+                                    .push(root_str.to_string() + line_stripped);
                             }
                         }
                         break;
@@ -192,15 +231,16 @@ impl DependencyAnalyzer {
                 }
                 // default ld paths
                 if self.conf_ld_paths.is_empty() {
-                    self.conf_ld_paths.push("/lib".to_string());
-                    self.conf_ld_paths.push("/usr/local/lib".to_string());
-                    self.conf_ld_paths.push("/usr/lib".to_string());
+                    self.conf_ld_paths.push(root_str.to_string() + "/lib");
+                    self.conf_ld_paths
+                        .push(root_str.to_string() + "/usr/local/lib");
+                    self.conf_ld_paths.push(root_str.to_string() + "/usr/lib");
                 }
             }
             // glibc
             _ => {
                 // Load up /etc/ld.so.conf
-                if let Ok(paths) = parse_ldsoconf("/etc/ld.so.conf") {
+                if let Ok(paths) = parse_ld_so_conf("/etc/ld.so.conf", &self.root) {
                     self.conf_ld_paths = paths;
                 }
                 // the trusted directories are not necessarily in ld.so.conf
@@ -221,7 +261,10 @@ impl DependencyAnalyzer {
             .chain(self.env_ld_paths.iter())
             .chain(self.conf_ld_paths.iter())
         {
-            let lib_path = Path::new(ld_path).join(lib);
+            let lib_path = self
+                .root
+                .join(ld_path.strip_prefix('/').unwrap_or(ld_path))
+                .join(lib);
             // FIXME: readlink to get real path
             if lib_path.exists() {
                 let bytes = fs::read(&lib_path)?;
@@ -251,34 +294,15 @@ impl DependencyAnalyzer {
     }
 }
 
-/// Parse the colon-delimited list of paths and apply ldso rules
-fn parse_ld_paths(ld_path: &str, elf_path: &Path) -> Result<Vec<String>, Error> {
-    let mut paths = Vec::new();
-    for path in ld_path.split(':') {
-        let normpath = if path.is_empty() {
-            // The ldso treats empty paths as the current directory
-            env::current_dir()?
-        } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
-            let elf_path = elf_path.canonicalize()?;
-            let elf_dir = elf_path.parent().expect("no parent");
-            let replacement = elf_dir.to_str().unwrap();
-            let path = path
-                .replace("${ORIGIN}", replacement)
-                .replace("$ORIGIN", replacement);
-            PathBuf::from(path).canonicalize()?
-        } else {
-            Path::new(path).canonicalize()?
-        };
-        paths.push(normpath.display().to_string());
-    }
-    Ok(paths)
-}
-
-/// Find musl libc path from executable's ELF header
+/// Find musl libc path
 fn find_musl_libc() -> Result<Option<PathBuf>, Error> {
-    let buffer = fs::read("/bin/ls")?;
-    let elf = Elf::parse(&buffer)?;
-    Ok(elf.interpreter.map(PathBuf::from))
+    match glob::glob("/lib/libc.musl-*.so.1")
+        .expect("invalid glob pattern")
+        .next()
+    {
+        Some(Ok(path)) => Ok(Some(path)),
+        _ => Ok(None),
+    }
 }
 
 /// See if two ELFs are compatible

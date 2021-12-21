@@ -50,8 +50,12 @@ impl From<glob::GlobError> for LdSoConfError {
 }
 
 /// Parse the `ld.so.conf` file on Linux
-pub fn parse_ldsoconf(path: impl AsRef<Path>) -> Result<Vec<String>, LdSoConfError> {
+pub fn parse_ld_so_conf(
+    path: impl AsRef<Path>,
+    root: impl AsRef<Path>,
+) -> Result<Vec<String>, LdSoConfError> {
     let path = path.as_ref();
+    let root = root.as_ref();
     let conf = fs::read_to_string(path)?;
     let mut paths = Vec::new();
     for line in conf.lines() {
@@ -62,18 +66,24 @@ pub fn parse_ldsoconf(path: impl AsRef<Path>) -> Result<Vec<String>, LdSoConfErr
             let include_path = &line[8..];
             let include_path = if !include_path.starts_with('/') {
                 let parent = path.parent().unwrap();
-                format!("{}/{}", parent.display(), include_path)
+                parent.join(include_path).display().to_string()
             } else {
-                include_path.to_string()
+                root.join(include_path.strip_prefix('/').unwrap_or(include_path))
+                    .display()
+                    .to_string()
             };
             for path in glob::glob(&include_path).map_err(|err| {
                 LdSoConfError::InvalidIncludeDirective(format!("{} in '{}'", err, line))
             })? {
                 let path = path?;
-                paths.extend(parse_ldsoconf(&path)?);
+                paths.extend(parse_ld_so_conf(&path, root)?);
             }
         } else {
-            paths.push(line.to_string());
+            paths.push(
+                root.join(line.strip_prefix('/').unwrap_or(line))
+                    .display()
+                    .to_string(),
+            );
         }
     }
     Ok(paths)
