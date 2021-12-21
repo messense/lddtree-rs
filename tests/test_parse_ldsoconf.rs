@@ -1,8 +1,8 @@
-use lddtree::ld_so_conf::parse_ldsoconf;
+use lddtree::ld_so_conf::parse_ld_so_conf;
 
 #[test]
 fn test_parse_ldsoconf() {
-    let paths = parse_ldsoconf("tests/ld.so.conf").unwrap();
+    let paths = parse_ld_so_conf("tests/ld.so.conf", "/").unwrap();
     assert_eq!(
         paths,
         vec![
