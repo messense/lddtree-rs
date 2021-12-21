@@ -294,11 +294,15 @@ impl DependencyAnalyzer {
     }
 }
 
-/// Find musl libc path from executable's ELF header
+/// Find musl libc path
 fn find_musl_libc() -> Result<Option<PathBuf>, Error> {
-    let buffer = fs::read("/bin/ls")?;
-    let elf = Elf::parse(&buffer)?;
-    Ok(elf.interpreter.map(PathBuf::from))
+    match glob::glob("/lib/libc.musl-*.so.1")
+        .expect("invalid glob pattern")
+        .next()
+    {
+        Some(Ok(path)) => Ok(Some(path)),
+        _ => Ok(None),
+    }
 }
 
 /// See if two ELFs are compatible
