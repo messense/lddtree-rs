@@ -18,7 +18,7 @@ Add it to your ``Cargo.toml``:
 
 ```toml
 [dependencies]
-lddtree = "0.1"
+lddtree = "0.2"
 ```
 
 ## License
