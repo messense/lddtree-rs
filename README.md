@@ -21,6 +21,19 @@ Add it to your ``Cargo.toml``:
 lddtree = "0.2"
 ```
 
+## Command line utility
+
+There is also a simple cli utility which can be installed via
+
+```bash
+cargo install lddtree
+```
+
+Usage: `lddtree <pathname> [root]`
+
+* `pathname` is the path to a linux shared library.
+* `root` is an optional path to a sysroot directory.
+
 ## License
 
 This work is released under the MIT license. A copy of the license is provided
