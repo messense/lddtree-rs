@@ -117,13 +117,13 @@ impl DependencyAnalyzer {
 
     /// Analyze the given binary.
     pub fn analyze(mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
-        let path = path.as_ref().canonicalize()?;
-        self.load_ld_paths(&path)?;
+        let path = path.as_ref();
+        self.load_ld_paths(path)?;
 
-        let bytes = fs::read(&path)?;
+        let bytes = fs::read(path)?;
         let elf = Elf::parse(&bytes)?;
 
-        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, &path, &bytes)?;
+        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path, &bytes)?;
         if !runpaths.is_empty() {
             // If both RPATH and RUNPATH are set, only the latter is used.
             rpaths = Vec::new();
