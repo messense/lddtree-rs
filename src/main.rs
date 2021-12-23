@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             {
                 println!("{} => {}", interp, path.display());
             } else {
-                println!("{}", interp);
+                println!("{} => not found", interp);
             }
         }
         for needed in deps.needed {
@@ -42,7 +42,7 @@ fn print_library(name: &str, libraries: &HashMap<String, Library>, level: usize)
         if let Some(path) = lib.realpath.as_ref() {
             println!("{}{} => {}", padding, name, path.display());
         } else {
-            println!("{}{}", padding, name);
+            println!("{}{} => not found", padding, name);
         }
         for needed in &lib.needed {
             print_library(needed, libraries, level + 4);
