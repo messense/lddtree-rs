@@ -10,7 +10,7 @@ files on disk).
 This is roughly a Rust port of the [lddtree.py](https://github.com/pypa/auditwheel/blob/main/src/auditwheel/lddtree.py)
 from the [auditwheel](https://github.com/pypa/auditwheel) project.
 It's intended to be used in [maturin](https://github.com/PyO3/maturin) for
-implementing automatic repair of manylinux and musllinux wheels.
+[implementing automatic repair of manylinux and musllinux wheels](https://github.com/PyO3/maturin/pull/742).
 
 ## Installation
 
