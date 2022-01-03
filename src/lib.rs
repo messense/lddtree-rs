@@ -268,18 +268,20 @@ impl DependencyAnalyzer {
             // FIXME: readlink to get real path
             if lib_path.exists() {
                 let bytes = fs::read(&lib_path)?;
-                let lib_elf = Elf::parse(&bytes)?;
-                if compatible_elfs(elf, &lib_elf) {
-                    let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
-                    let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path, &bytes)?;
-                    return Ok(Library {
-                        name: lib.to_string(),
-                        path: lib_path.to_path_buf(),
-                        realpath: lib_path.canonicalize().ok(),
-                        needed,
-                        rpath,
-                        runpath,
-                    });
+                if let Ok(lib_elf) = Elf::parse(&bytes) {
+                    if compatible_elfs(elf, &lib_elf) {
+                        let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
+                        let (rpath, runpath) =
+                            self.read_rpath_runpath(&lib_elf, &lib_path, &bytes)?;
+                        return Ok(Library {
+                            name: lib.to_string(),
+                            path: lib_path.to_path_buf(),
+                            realpath: lib_path.canonicalize().ok(),
+                            needed,
+                            rpath,
+                            runpath,
+                        });
+                    }
                 }
             }
         }
