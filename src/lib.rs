@@ -182,7 +182,7 @@ impl DependencyAnalyzer {
         for path in ld_path.split(':') {
             let normpath = if path.is_empty() {
                 // The ldso treats empty paths as the current directory
-                env::current_dir()?
+                env::current_dir()
             } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
                 let elf_path = elf_path.canonicalize()?;
                 let elf_dir = elf_path.parent().expect("no parent");
@@ -190,13 +190,15 @@ impl DependencyAnalyzer {
                 let path = path
                     .replace("${ORIGIN}", replacement)
                     .replace("$ORIGIN", replacement);
-                PathBuf::from(path).canonicalize()?
+                PathBuf::from(path).canonicalize()
             } else {
                 self.root
                     .join(path.strip_prefix('/').unwrap_or(path))
-                    .canonicalize()?
+                    .canonicalize()
             };
-            paths.push(normpath.display().to_string());
+            if let Ok(normpath) = normpath {
+                paths.push(normpath.display().to_string());
+            }
         }
         Ok(paths)
     }
