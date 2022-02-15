@@ -8,11 +8,9 @@ use std::path::{Path, PathBuf};
 
 use fs_err as fs;
 use goblin::elf::{
-    dynamic::{DT_RPATH, DT_RUNPATH},
-    header::EI_OSABI,
+    header::{EI_OSABI, ELFOSABI_GNU, ELFOSABI_NONE},
     Elf,
 };
-use goblin::strtab::Strtab;
 
 mod errors;
 pub mod ld_so_conf;
@@ -89,27 +87,17 @@ impl DependencyAnalyzer {
         &self,
         elf: &Elf,
         path: &Path,
-        bytes: &[u8],
     ) -> Result<(Vec<String>, Vec<String>), Error> {
         let mut rpaths = Vec::new();
         let mut runpaths = Vec::new();
-        if let Some(dynamic) = &elf.dynamic {
-            let dyn_info = &dynamic.info;
-            let dynstrtab = Strtab::parse(&bytes, dyn_info.strtab, dyn_info.strsz, 0x0)?;
-            for dyn_ in &dynamic.dyns {
-                if dyn_.d_tag == DT_RUNPATH {
-                    if let Some(runpath) = dynstrtab.get_at(dyn_.d_val as usize) {
-                        if let Ok(ld_paths) = self.parse_ld_paths(runpath, path) {
-                            runpaths = ld_paths;
-                        }
-                    }
-                } else if dyn_.d_tag == DT_RPATH {
-                    if let Some(rpath) = dynstrtab.get_at(dyn_.d_val as usize) {
-                        if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
-                            rpaths = ld_paths;
-                        }
-                    }
-                }
+        for runpath in &elf.runpaths {
+            if let Ok(ld_paths) = self.parse_ld_paths(runpath, path) {
+                runpaths = ld_paths;
+            }
+        }
+        for rpath in &elf.rpaths {
+            if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
+                rpaths = ld_paths;
             }
         }
         Ok((rpaths, runpaths))
@@ -123,7 +111,7 @@ impl DependencyAnalyzer {
         let bytes = fs::read(path)?;
         let elf = Elf::parse(&bytes)?;
 
-        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path, &bytes)?;
+        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path)?;
         if !runpaths.is_empty() {
             // If both RPATH and RUNPATH are set, only the latter is used.
             rpaths = Vec::new();
@@ -273,8 +261,7 @@ impl DependencyAnalyzer {
                 if let Ok(lib_elf) = Elf::parse(&bytes) {
                     if compatible_elfs(elf, &lib_elf) {
                         let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
-                        let (rpath, runpath) =
-                            self.read_rpath_runpath(&lib_elf, &lib_path, &bytes)?;
+                        let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path)?;
                         return Ok(Library {
                             name: lib.to_string(),
                             path: lib_path.to_path_buf(),
@@ -324,8 +311,8 @@ fn compatible_elfs(elf1: &Elf, elf2: &Elf) -> bool {
         return false;
     }
     let compatible_osabis = &[
-        0, // ELFOSABI_NONE / ELFOSABI_SYSV
-        3, // ELFOSABI_GNU / ELFOSABI_LINUX
+        ELFOSABI_NONE, // ELFOSABI_NONE / ELFOSABI_SYSV
+        ELFOSABI_GNU,  // ELFOSABI_GNU / ELFOSABI_LINUX
     ];
     let osabi1 = elf1.header.e_ident[EI_OSABI];
     let osabi2 = elf2.header.e_ident[EI_OSABI];
