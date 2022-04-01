@@ -30,8 +30,8 @@ impl fmt::Display for LdSoConfError {
 impl Error for LdSoConfError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            LdSoConfError::Io(e) => Some(e),
-            LdSoConfError::Glob(e) => Some(e),
+            LdSoConfError::Io(e) => e.source(),
+            LdSoConfError::Glob(e) => e.source(),
             LdSoConfError::InvalidIncludeDirective(_) => None,
         }
     }
