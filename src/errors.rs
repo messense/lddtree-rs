@@ -24,9 +24,9 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Error::Io(e) => Some(e),
-            Error::Goblin(e) => Some(e),
-            Error::LdSoConf(e) => Some(e),
+            Error::Io(e) => e.source(),
+            Error::Goblin(e) => e.source(),
+            Error::LdSoConf(e) => e.source(),
         }
     }
 }
