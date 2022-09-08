@@ -275,7 +275,11 @@ impl DependencyAnalyzer {
                     .join(ld_path.strip_prefix('/').unwrap_or(ld_path))
                     .join(lib)
             })
-            .chain(self.additional_ld_paths.iter().cloned())
+            .chain(
+                self.additional_ld_paths
+                    .iter()
+                    .map(|ld_path| ld_path.join(lib)),
+            )
         {
             // FIXME: readlink to get real path
             if lib_path.exists() {
