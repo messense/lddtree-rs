@@ -62,6 +62,7 @@ pub struct DependencyTree {
 pub struct DependencyAnalyzer {
     env_ld_paths: Vec<String>,
     conf_ld_paths: Vec<String>,
+    additional_ld_paths: Vec<PathBuf>,
     runpaths: Vec<String>,
     root: PathBuf,
 }
@@ -78,9 +79,28 @@ impl DependencyAnalyzer {
         DependencyAnalyzer {
             env_ld_paths: Vec::new(),
             conf_ld_paths: Vec::new(),
+            additional_ld_paths: Vec::new(),
             runpaths: Vec::new(),
             root,
         }
+    }
+
+    /// Add additional library path
+    ///
+    /// Additional library paths are treated as absolute paths,
+    /// not relative to `root`
+    pub fn add_library_path(mut self, path: PathBuf) -> Self {
+        self.additional_ld_paths.push(path);
+        self
+    }
+
+    /// Set additional library paths
+    ///
+    /// Additional library paths are treated as absolute paths,
+    /// not relative to `root`
+    pub fn set_library_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.additional_ld_paths = paths;
+        self
     }
 
     fn read_rpath_runpath(
@@ -245,16 +265,18 @@ impl DependencyAnalyzer {
 
     /// Try to locate a `lib` that is compatible to `elf`
     fn find_library(&self, elf: &Elf, lib: &str) -> Result<Library, Error> {
-        for ld_path in self
+        for lib_path in self
             .runpaths
             .iter()
             .chain(self.env_ld_paths.iter())
             .chain(self.conf_ld_paths.iter())
+            .map(|ld_path| {
+                self.root
+                    .join(ld_path.strip_prefix('/').unwrap_or(ld_path))
+                    .join(lib)
+            })
+            .chain(self.additional_ld_paths.iter().cloned())
         {
-            let lib_path = self
-                .root
-                .join(ld_path.strip_prefix('/').unwrap_or(ld_path))
-                .join(lib);
             // FIXME: readlink to get real path
             if lib_path.exists() {
                 let bytes = fs::read(&lib_path)?;
