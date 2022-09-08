@@ -13,7 +13,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             .next()
             .map(|s| PathBuf::from(&s))
             .unwrap_or_else(|| PathBuf::from("/"));
-        let analyzer = DependencyAnalyzer::new(root);
+        let lib_paths = args.map(|s| PathBuf::from(&s)).collect();
+        let analyzer = DependencyAnalyzer::new(root).set_library_paths(lib_paths);
         let deps = analyzer.analyze(pathname)?;
         if let Some(interp) = deps.interpreter {
             if let Some(path) = deps
@@ -30,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             print_library(&needed, &deps.libraries, 0);
         }
     } else {
-        eprintln!("USAGE: lddtree <pathname> [root]");
+        eprintln!("USAGE: lddtree <pathname> [root] [library path...]");
         process::exit(1);
     }
     Ok(())
