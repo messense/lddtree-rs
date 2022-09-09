@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|s| PathBuf::from(&s))
             .unwrap_or_else(|| PathBuf::from("/"));
         let lib_paths = args.map(|s| PathBuf::from(&s)).collect();
-        let analyzer = DependencyAnalyzer::new(root).set_library_paths(lib_paths);
+        let analyzer = DependencyAnalyzer::new(root).library_paths(lib_paths);
         let deps = analyzer.analyze(pathname)?;
         if let Some(interp) = deps.interpreter {
             if let Some(path) = deps

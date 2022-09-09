@@ -98,7 +98,7 @@ impl DependencyAnalyzer {
     ///
     /// Additional library paths are treated as absolute paths,
     /// not relative to `root`
-    pub fn set_library_paths(mut self, paths: Vec<PathBuf>) -> Self {
+    pub fn library_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.additional_ld_paths = paths;
         self
     }
