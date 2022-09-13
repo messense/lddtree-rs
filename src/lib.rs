@@ -166,7 +166,7 @@ impl DependencyAnalyzer {
                     Library {
                         name: interp_name.to_string(),
                         path: interp_path,
-                        realpath: PathBuf::from(interp).canonicalize().ok(),
+                        realpath: fs::canonicalize(PathBuf::from(interp)).ok(),
                         needed: Vec::new(),
                         rpath: Vec::new(),
                         runpath: Vec::new(),
@@ -192,17 +192,15 @@ impl DependencyAnalyzer {
                 // The ldso treats empty paths as the current directory
                 env::current_dir()
             } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
-                let elf_path = elf_path.canonicalize()?;
+                let elf_path = fs::canonicalize(elf_path)?;
                 let elf_dir = elf_path.parent().expect("no parent");
                 let replacement = elf_dir.to_str().unwrap();
                 let path = path
                     .replace("${ORIGIN}", replacement)
                     .replace("$ORIGIN", replacement);
-                PathBuf::from(path).canonicalize()
+                fs::canonicalize(PathBuf::from(path))
             } else {
-                self.root
-                    .join(path.strip_prefix('/').unwrap_or(path))
-                    .canonicalize()
+                fs::canonicalize(self.root.join(path.strip_prefix('/').unwrap_or(path)))
             };
             if let Ok(normpath) = normpath {
                 paths.push(normpath.display().to_string());
@@ -291,7 +289,7 @@ impl DependencyAnalyzer {
                         return Ok(Library {
                             name: lib.to_string(),
                             path: lib_path.to_path_buf(),
-                            realpath: lib_path.canonicalize().ok(),
+                            realpath: fs::canonicalize(lib_path).ok(),
                             needed,
                             rpath,
                             runpath,
