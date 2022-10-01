@@ -1,7 +1,7 @@
 use lddtree::DependencyAnalyzer;
 
 #[test]
-fn test_lddtree() {
+fn test_elf() {
     let analyzer = DependencyAnalyzer::default();
     let deps = analyzer.analyze("tests/test.elf").unwrap();
     assert_eq!(
@@ -19,4 +19,38 @@ fn test_lddtree() {
         ]
     );
     assert_eq!(deps.libraries.len(), 6);
+}
+
+#[test]
+fn test_macho() {
+    let analyzer = DependencyAnalyzer::default();
+    let deps = analyzer.analyze("tests/test.macho").unwrap();
+    assert!(deps.interpreter.is_none());
+    assert_eq!(
+        deps.needed,
+        &[
+            "/usr/lib/libz.1.dylib",
+            "/usr/lib/libiconv.2.dylib",
+            "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+            "/usr/lib/libSystem.B.dylib"
+        ]
+    );
+    assert_eq!(deps.libraries.len(), 4);
+}
+
+#[test]
+fn test_pe() {
+    let analyzer = DependencyAnalyzer::default();
+    let deps = analyzer.analyze("tests/test.pe").unwrap();
+    assert!(deps.interpreter.is_none());
+    assert_eq!(
+        deps.needed,
+        &[
+            "KERNEL32.dll",
+            "VCRUNTIME140.dll",
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "api-ms-win-crt-stdio-l1-1-0.dll"
+        ]
+    );
+    assert_eq!(deps.libraries.len(), 4);
 }
