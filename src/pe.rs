@@ -17,7 +17,15 @@ impl InspectDylib for PE<'_> {
 
     fn compatible(&self, other: &Object) -> bool {
         match other {
-            Object::PE(_) => true,
+            Object::PE(pe) => {
+                if self.is_64 != pe.is_64 {
+                    return false;
+                }
+                if self.header.coff_header.machine != pe.header.coff_header.machine {
+                    return false;
+                }
+                true
+            }
             _ => false,
         }
     }
