@@ -15,6 +15,7 @@ mod elf;
 mod errors;
 pub mod ld_so_conf;
 mod macho;
+mod pe;
 
 pub use errors::Error;
 use ld_so_conf::parse_ld_so_conf;
@@ -137,6 +138,7 @@ impl DependencyAnalyzer {
                 Mach::Fat(_) => return Err(Error::UnsupportedBinary),
                 Mach::Binary(macho) => self.analyze_dylib(path, macho)?,
             },
+            Object::PE(pe) => self.analyze_dylib(path, pe)?,
             _ => return Err(Error::UnsupportedBinary),
         };
         Ok(dep_tree)
@@ -319,6 +321,16 @@ impl DependencyAnalyzer {
                                 }
                             }
                         },
+                        Object::PE(ref pe) => {
+                            if dylib.compatible(&obj) {
+                                Some((
+                                    self.read_rpath(pe, &lib_path)?,
+                                    pe.libraries().iter().map(ToString::to_string).collect(),
+                                ))
+                            } else {
+                                None
+                            }
+                        }
                         _ => None,
                     } {
                         return Ok(Library {
