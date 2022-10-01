@@ -13,8 +13,10 @@ use goblin::elf::{
 };
 use memmap2::Mmap;
 
+mod elf;
 mod errors;
 pub mod ld_so_conf;
+mod macho;
 
 pub use errors::Error;
 use ld_so_conf::parse_ld_so_conf;
@@ -30,10 +32,8 @@ pub struct Library {
     pub realpath: Option<PathBuf>,
     /// The dependencies of this library.
     pub needed: Vec<String>,
-    /// Runtime library search paths. (deprecated)
-    pub rpath: Vec<String>,
     /// Runtime library search paths.
-    pub runpath: Vec<String>,
+    pub rpath: Vec<String>,
 }
 
 impl Library {
@@ -52,10 +52,17 @@ pub struct DependencyTree {
     pub needed: Vec<String>,
     /// All of this binary’s dynamic libraries it uses in detail.
     pub libraries: HashMap<String, Library>,
-    /// Runtime library search paths. (deprecated)
-    pub rpath: Vec<String>,
     /// Runtime library search paths.
-    pub runpath: Vec<String>,
+    pub rpath: Vec<String>,
+}
+
+trait InspectDylib {
+    /// Runtime library search paths.
+    fn rpaths(&self) -> &[&str];
+    /// A list of this binary’s dynamic libraries it depends on directly.
+    fn libraries(&self) -> &[&str];
+    /// The binary’s program interpreter (e.g., dynamic linker).
+    fn interpreter(&self) -> Option<&str>;
 }
 
 /// Library dependency analyzer
@@ -64,7 +71,7 @@ pub struct DependencyAnalyzer {
     env_ld_paths: Vec<String>,
     conf_ld_paths: Vec<String>,
     additional_ld_paths: Vec<PathBuf>,
-    runpaths: Vec<String>,
+    rpaths: Vec<String>,
     root: PathBuf,
 }
 
@@ -81,7 +88,7 @@ impl DependencyAnalyzer {
             env_ld_paths: Vec::new(),
             conf_ld_paths: Vec::new(),
             additional_ld_paths: Vec::new(),
-            runpaths: Vec::new(),
+            rpaths: Vec::new(),
             root,
         }
     }
@@ -104,24 +111,14 @@ impl DependencyAnalyzer {
         self
     }
 
-    fn read_rpath_runpath(
-        &self,
-        elf: &Elf,
-        path: &Path,
-    ) -> Result<(Vec<String>, Vec<String>), Error> {
+    fn read_rpath(&self, lib: &impl InspectDylib, path: &Path) -> Result<Vec<String>, Error> {
         let mut rpaths = Vec::new();
-        let mut runpaths = Vec::new();
-        for runpath in &elf.runpaths {
-            if let Ok(ld_paths) = self.parse_ld_paths(runpath, path) {
-                runpaths = ld_paths;
-            }
-        }
-        for rpath in &elf.rpaths {
+        for rpath in lib.rpaths() {
             if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
                 rpaths = ld_paths;
             }
         }
-        Ok((rpaths, runpaths))
+        Ok(rpaths)
     }
 
     /// Analyze the given binary.
@@ -139,15 +136,9 @@ impl DependencyAnalyzer {
         let bytes = unsafe { Mmap::map(&file)? };
         let elf = Elf::parse(&bytes)?;
 
-        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path)?;
-        if !runpaths.is_empty() {
-            // If both RPATH and RUNPATH are set, only the latter is used.
-            rpaths = Vec::new();
-        }
-        self.runpaths = runpaths.clone();
-        self.runpaths.extend(rpaths.clone());
+        let rpaths = self.read_rpath(&elf, path)?;
 
-        let needed: Vec<String> = elf.libraries.iter().map(ToString::to_string).collect();
+        let needed: Vec<String> = elf.libraries().iter().map(ToString::to_string).collect();
         let mut libraries = HashMap::new();
 
         let mut stack = needed.clone();
@@ -160,7 +151,7 @@ impl DependencyAnalyzer {
             stack.extend(library.needed);
         }
 
-        let interpreter = elf.interpreter.map(|interp| interp.to_string());
+        let interpreter = elf.interpreter().map(|interp| interp.to_string());
         if let Some(ref interp) = interpreter {
             if !libraries.contains_key(interp) {
                 let interp_path = self.root.join(interp.strip_prefix('/').unwrap_or(interp));
@@ -178,7 +169,6 @@ impl DependencyAnalyzer {
                         realpath: interp_realpath,
                         needed: Vec::new(),
                         rpath: Vec::new(),
-                        runpath: Vec::new(),
                     },
                 );
             }
@@ -188,22 +178,21 @@ impl DependencyAnalyzer {
             needed,
             libraries,
             rpath: rpaths,
-            runpath: runpaths,
         };
         Ok(dep_tree)
     }
 
     /// Parse the colon-delimited list of paths and apply ldso rules
-    fn parse_ld_paths(&self, ld_path: &str, elf_path: &Path) -> Result<Vec<String>, Error> {
+    fn parse_ld_paths(&self, ld_path: &str, dylib_path: &Path) -> Result<Vec<String>, Error> {
         let mut paths = Vec::new();
         for path in ld_path.split(':') {
             let normpath = if path.is_empty() {
                 // The ldso treats empty paths as the current directory
                 env::current_dir()
             } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
-                let elf_path = fs::canonicalize(elf_path)?;
-                let elf_dir = elf_path.parent().expect("no parent");
-                let replacement = elf_dir.to_str().unwrap();
+                let dylib_path = fs::canonicalize(dylib_path)?;
+                let dylib_dir = dylib_path.parent().expect("no parent");
+                let replacement = dylib_dir.to_str().unwrap();
                 let path = path
                     .replace("${ORIGIN}", replacement)
                     .replace("$ORIGIN", replacement);
@@ -218,11 +207,11 @@ impl DependencyAnalyzer {
         Ok(paths)
     }
 
-    fn load_ld_paths(&mut self, elf_path: &Path) -> Result<(), Error> {
+    fn load_ld_paths(&mut self, dylib_path: &Path) -> Result<(), Error> {
         #[cfg(unix)]
         if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
             if self.root == Path::new("/") {
-                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, elf_path)?;
+                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, dylib_path)?;
             }
         }
         // Load all the paths from a ldso config file
@@ -270,22 +259,22 @@ impl DependencyAnalyzer {
         Ok(())
     }
 
-    /// Try to locate a `lib` that is compatible to `elf`
-    fn find_library(&self, elf: &Elf, lib: &str) -> Result<Library, Error> {
+    /// Try to locate a `lib_name` that is compatible to `dylib`
+    fn find_library(&self, dylib: &Elf, lib_name: &str) -> Result<Library, Error> {
         for lib_path in self
-            .runpaths
+            .rpaths
             .iter()
             .chain(self.env_ld_paths.iter())
             .chain(self.conf_ld_paths.iter())
             .map(|ld_path| {
                 self.root
                     .join(ld_path.strip_prefix('/').unwrap_or(ld_path))
-                    .join(lib)
+                    .join(lib_name)
             })
             .chain(
                 self.additional_ld_paths
                     .iter()
-                    .map(|ld_path| ld_path.join(lib)),
+                    .map(|ld_path| ld_path.join(lib_name)),
             )
         {
             // FIXME: readlink to get real path
@@ -299,28 +288,26 @@ impl DependencyAnalyzer {
                 // but we keep it in scope until parsing is complete for clarity and portability.
                 let bytes = unsafe { Mmap::map(&file)? };
                 if let Ok(lib_elf) = Elf::parse(&bytes) {
-                    if compatible_elfs(elf, &lib_elf) {
+                    if compatible_elfs(dylib, &lib_elf) {
                         let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
-                        let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path)?;
+                        let rpath = self.read_rpath(&lib_elf, &lib_path)?;
                         return Ok(Library {
-                            name: lib.to_string(),
+                            name: lib_name.to_string(),
                             path: lib_path.to_path_buf(),
                             realpath: fs::canonicalize(lib_path).ok(),
                             needed,
                             rpath,
-                            runpath,
                         });
                     }
                 }
             }
         }
         Ok(Library {
-            name: lib.to_string(),
-            path: PathBuf::from(lib),
+            name: lib_name.to_string(),
+            path: PathBuf::from(lib_name),
             realpath: None,
             needed: Vec::new(),
             rpath: Vec::new(),
-            runpath: Vec::new(),
         })
     }
 }
