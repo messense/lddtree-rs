@@ -1,4 +1,4 @@
-use goblin::mach::MachO;
+use goblin::{mach::MachO, Object};
 
 use crate::InspectDylib;
 
@@ -13,5 +13,12 @@ impl InspectDylib for MachO<'_> {
 
     fn interpreter(&self) -> Option<&str> {
         None
+    }
+
+    fn compatible(&self, other: &Object) -> bool {
+        match other {
+            Object::Mach(_) => true,
+            _ => false,
+        }
     }
 }
