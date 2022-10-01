@@ -1,4 +1,7 @@
-use goblin::{mach::MachO, Object};
+use goblin::{
+    mach::{Mach, MachO},
+    Object,
+};
 
 use crate::InspectDylib;
 
@@ -20,7 +23,30 @@ impl InspectDylib for MachO<'_> {
 
     fn compatible(&self, other: &Object) -> bool {
         match other {
-            Object::Mach(_) => true,
+            Object::Mach(mach) => match mach {
+                Mach::Fat(fat) => {
+                    for macho in fat {
+                        if let Ok(goblin::mach::SingleArch::MachO(macho)) = macho {
+                            if self.compatible(&Object::Mach(Mach::Binary(macho))) {
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                }
+                Mach::Binary(macho) => {
+                    if self.is_64 != macho.is_64 {
+                        return false;
+                    }
+                    if self.little_endian != macho.little_endian {
+                        return false;
+                    }
+                    if self.header.cputype != macho.header.cputype {
+                        return false;
+                    }
+                    true
+                }
+            },
             _ => false,
         }
     }
