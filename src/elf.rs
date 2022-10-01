@@ -17,8 +17,8 @@ impl InspectDylib for Elf<'_> {
         }
     }
 
-    fn libraries(&self) -> &[&str] {
-        &self.libraries
+    fn libraries(&self) -> Vec<&str> {
+        self.libraries.clone()
     }
 
     fn interpreter(&self) -> Option<&str> {

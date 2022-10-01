@@ -58,7 +58,7 @@ trait InspectDylib {
     /// Runtime library search paths.
     fn rpaths(&self) -> &[&str];
     /// A list of this binary's dynamic libraries it depends on directly.
-    fn libraries(&self) -> &[&str];
+    fn libraries(&self) -> Vec<&str>;
     /// The binary's program interpreter (e.g., dynamic linker).
     fn interpreter(&self) -> Option<&str>;
     /// See if two dynamic libraries are compatible.
