@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         for needed in deps.needed {
-            print_library(&needed, &deps.libraries, 0);
+            print_library(&needed, &deps.libraries, 0, HashSet::new());
         }
     } else {
         eprintln!("USAGE: lddtree <pathname> [root] [library path...]");
@@ -37,16 +37,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn print_library(name: &str, libraries: &HashMap<String, Library>, level: usize) {
+fn print_library(
+    name: &str,
+    libraries: &HashMap<String, Library>,
+    level: usize,
+    mut history: HashSet<PathBuf>,
+) {
     let padding = " ".repeat(level);
     if let Some(lib) = libraries.get(name) {
         if let Some(path) = lib.realpath.as_ref() {
-            println!("{}{} => {}", padding, name, path.display());
+            let looping = !history.insert(path.to_path_buf());
+            let loop_annotation = if looping { " (DEPENDENCY CYCLE)" } else { "" };
+            println!(
+                "{}{} => {}{}",
+                padding,
+                name,
+                path.display(),
+                loop_annotation
+            );
+            if looping {
+                return;
+            };
         } else {
             println!("{}{} => not found", padding, name);
         }
+
         for needed in &lib.needed {
-            print_library(needed, libraries, level + 4);
+            print_library(needed, libraries, level + 4, history.clone());
         }
     }
 }
