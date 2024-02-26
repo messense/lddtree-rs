@@ -9,6 +9,7 @@ pub enum Error {
     Io(io::Error),
     Goblin(goblin::error::Error),
     LdSoConf(LdSoConfError),
+    UnsupportedBinary,
 }
 
 impl fmt::Display for Error {
@@ -17,6 +18,7 @@ impl fmt::Display for Error {
             Error::Io(e) => e.fmt(f),
             Error::Goblin(e) => e.fmt(f),
             Error::LdSoConf(e) => e.fmt(f),
+            Error::UnsupportedBinary => write!(f, "Unsupported binary format"),
         }
     }
 }
@@ -27,6 +29,7 @@ impl error::Error for Error {
             Error::Io(e) => e.source(),
             Error::Goblin(e) => e.source(),
             Error::LdSoConf(e) => e.source(),
+            Error::UnsupportedBinary => None,
         }
     }
 }
