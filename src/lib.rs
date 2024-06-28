@@ -161,12 +161,13 @@ impl DependencyAnalyzer {
                     .expect("missing filename")
                     .to_str()
                     .expect("Filename isn't valid Unicode");
+                let interp_realpath = fs::canonicalize(PathBuf::from(&interp_path)).ok();
                 libraries.insert(
                     interp.to_string(),
                     Library {
                         name: interp_name.to_string(),
                         path: interp_path,
-                        realpath: fs::canonicalize(PathBuf::from(interp)).ok(),
+                        realpath: interp_realpath,
                         needed: Vec::new(),
                         rpath: Vec::new(),
                         runpath: Vec::new(),
