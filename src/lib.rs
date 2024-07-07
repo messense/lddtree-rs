@@ -7,13 +7,14 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use fs_err as fs;
-use goblin::elf::{
-    header::{EI_OSABI, ELFOSABI_GNU, ELFOSABI_NONE},
-    Elf,
-};
+use goblin::mach::Mach;
+use goblin::Object;
 
+mod elf;
 mod errors;
 pub mod ld_so_conf;
+mod macho;
+mod pe;
 
 pub use errors::Error;
 use ld_so_conf::parse_ld_so_conf;
@@ -29,10 +30,8 @@ pub struct Library {
     pub realpath: Option<PathBuf>,
     /// The dependencies of this library.
     pub needed: Vec<String>,
-    /// Runtime library search paths. (deprecated)
-    pub rpath: Vec<String>,
     /// Runtime library search paths.
-    pub runpath: Vec<String>,
+    pub rpath: Vec<String>,
 }
 
 impl Library {
@@ -51,10 +50,19 @@ pub struct DependencyTree {
     pub needed: Vec<String>,
     /// All of this binary’s dynamic libraries it uses in detail.
     pub libraries: HashMap<String, Library>,
-    /// Runtime library search paths. (deprecated)
-    pub rpath: Vec<String>,
     /// Runtime library search paths.
-    pub runpath: Vec<String>,
+    pub rpath: Vec<String>,
+}
+
+trait InspectDylib {
+    /// Runtime library search paths.
+    fn rpaths(&self) -> &[&str];
+    /// A list of this binary’s dynamic libraries it depends on directly.
+    fn libraries(&self) -> Vec<&str>;
+    /// The binary’s program interpreter (e.g., dynamic linker).
+    fn interpreter(&self) -> Option<&str>;
+    /// See if two dynamic libraries are compatible.
+    fn compatible(&self, other: &Object) -> bool;
 }
 
 /// Library dependency analyzer
@@ -63,7 +71,7 @@ pub struct DependencyAnalyzer {
     env_ld_paths: Vec<String>,
     conf_ld_paths: Vec<String>,
     additional_ld_paths: Vec<PathBuf>,
-    runpaths: Vec<String>,
+    rpaths: Vec<String>,
     root: PathBuf,
 }
 
@@ -80,7 +88,7 @@ impl DependencyAnalyzer {
             env_ld_paths: Vec::new(),
             conf_ld_paths: Vec::new(),
             additional_ld_paths: Vec::new(),
-            runpaths: Vec::new(),
+            rpaths: Vec::new(),
             root,
         }
     }
@@ -103,24 +111,14 @@ impl DependencyAnalyzer {
         self
     }
 
-    fn read_rpath_runpath(
-        &self,
-        elf: &Elf,
-        path: &Path,
-    ) -> Result<(Vec<String>, Vec<String>), Error> {
+    fn read_rpath(&self, lib: &impl InspectDylib, path: &Path) -> Result<Vec<String>, Error> {
         let mut rpaths = Vec::new();
-        let mut runpaths = Vec::new();
-        for runpath in &elf.runpaths {
-            if let Ok(ld_paths) = self.parse_ld_paths(runpath, path) {
-                runpaths = ld_paths;
-            }
-        }
-        for rpath in &elf.rpaths {
+        for rpath in lib.rpaths() {
             if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
                 rpaths = ld_paths;
             }
         }
-        Ok((rpaths, runpaths))
+        Ok(rpaths)
     }
 
     /// Analyze the given binary.
@@ -129,17 +127,26 @@ impl DependencyAnalyzer {
         self.load_ld_paths(path)?;
 
         let bytes = fs::read(path)?;
-        let elf = Elf::parse(&bytes)?;
+        let dep_tree = match Object::parse(&bytes)? {
+            Object::Elf(elf) => self.analyze_dylib(path, elf)?,
+            Object::Mach(mach) => match mach {
+                Mach::Fat(_) => return Err(Error::UnsupportedBinary),
+                Mach::Binary(macho) => self.analyze_dylib(path, macho)?,
+            },
+            Object::PE(pe) => self.analyze_dylib(path, pe)?,
+            _ => return Err(Error::UnsupportedBinary),
+        };
+        Ok(dep_tree)
+    }
 
-        let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path)?;
-        if !runpaths.is_empty() {
-            // If both RPATH and RUNPATH are set, only the latter is used.
-            rpaths = Vec::new();
-        }
-        self.runpaths = runpaths.clone();
-        self.runpaths.extend(rpaths.clone());
+    fn analyze_dylib(
+        &mut self,
+        path: &Path,
+        dylib: impl InspectDylib,
+    ) -> Result<DependencyTree, Error> {
+        let rpaths = self.read_rpath(&dylib, path)?;
 
-        let needed: Vec<String> = elf.libraries.iter().map(ToString::to_string).collect();
+        let needed: Vec<String> = dylib.libraries().iter().map(ToString::to_string).collect();
         let mut libraries = HashMap::new();
 
         let mut stack = needed.clone();
@@ -147,12 +154,12 @@ impl DependencyAnalyzer {
             if libraries.contains_key(&lib_name) {
                 continue;
             }
-            let library = self.find_library(&elf, &lib_name)?;
+            let library = self.find_library(&dylib, &lib_name)?;
             libraries.insert(lib_name, library.clone());
             stack.extend(library.needed);
         }
 
-        let interpreter = elf.interpreter.map(|interp| interp.to_string());
+        let interpreter = dylib.interpreter().map(|interp| interp.to_string());
         if let Some(ref interp) = interpreter {
             if !libraries.contains_key(interp) {
                 let interp_path = self.root.join(interp.strip_prefix('/').unwrap_or(interp));
@@ -170,7 +177,6 @@ impl DependencyAnalyzer {
                         realpath: interp_realpath,
                         needed: Vec::new(),
                         rpath: Vec::new(),
-                        runpath: Vec::new(),
                     },
                 );
             }
@@ -180,22 +186,21 @@ impl DependencyAnalyzer {
             needed,
             libraries,
             rpath: rpaths,
-            runpath: runpaths,
         };
         Ok(dep_tree)
     }
 
     /// Parse the colon-delimited list of paths and apply ldso rules
-    fn parse_ld_paths(&self, ld_path: &str, elf_path: &Path) -> Result<Vec<String>, Error> {
+    fn parse_ld_paths(&self, ld_path: &str, dylib_path: &Path) -> Result<Vec<String>, Error> {
         let mut paths = Vec::new();
         for path in ld_path.split(':') {
             let normpath = if path.is_empty() {
                 // The ldso treats empty paths as the current directory
                 env::current_dir()
             } else if path.contains("$ORIGIN") || path.contains("${ORIGIN}") {
-                let elf_path = fs::canonicalize(elf_path)?;
-                let elf_dir = elf_path.parent().expect("no parent");
-                let replacement = elf_dir.to_str().unwrap();
+                let dylib_path = fs::canonicalize(dylib_path)?;
+                let dylib_dir = dylib_path.parent().expect("no parent");
+                let replacement = dylib_dir.to_str().unwrap();
                 let path = path
                     .replace("${ORIGIN}", replacement)
                     .replace("$ORIGIN", replacement);
@@ -210,11 +215,11 @@ impl DependencyAnalyzer {
         Ok(paths)
     }
 
-    fn load_ld_paths(&mut self, elf_path: &Path) -> Result<(), Error> {
+    fn load_ld_paths(&mut self, dylib_path: &Path) -> Result<(), Error> {
         #[cfg(unix)]
         if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
             if self.root == Path::new("/") {
-                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, elf_path)?;
+                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, dylib_path)?;
             }
         }
         // Load all the paths from a ldso config file
@@ -262,50 +267,81 @@ impl DependencyAnalyzer {
         Ok(())
     }
 
-    /// Try to locate a `lib` that is compatible to `elf`
-    fn find_library(&self, elf: &Elf, lib: &str) -> Result<Library, Error> {
+    /// Try to locate a `lib_name` that is compatible to `dylib`
+    fn find_library(&self, dylib: &impl InspectDylib, lib_name: &str) -> Result<Library, Error> {
         for lib_path in self
-            .runpaths
+            .rpaths
             .iter()
             .chain(self.env_ld_paths.iter())
             .chain(self.conf_ld_paths.iter())
             .map(|ld_path| {
                 self.root
                     .join(ld_path.strip_prefix('/').unwrap_or(ld_path))
-                    .join(lib)
+                    .join(lib_name)
             })
             .chain(
                 self.additional_ld_paths
                     .iter()
-                    .map(|ld_path| ld_path.join(lib)),
+                    .map(|ld_path| ld_path.join(lib_name)),
             )
         {
             // FIXME: readlink to get real path
             if lib_path.exists() {
                 let bytes = fs::read(&lib_path)?;
-                if let Ok(lib_elf) = Elf::parse(&bytes) {
-                    if compatible_elfs(elf, &lib_elf) {
-                        let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
-                        let (rpath, runpath) = self.read_rpath_runpath(&lib_elf, &lib_path)?;
+                if let Ok(obj) = Object::parse(&bytes) {
+                    if let Some((rpath, needed)) = match obj {
+                        Object::Elf(ref elf) => {
+                            if dylib.compatible(&obj) {
+                                Some((
+                                    self.read_rpath(elf, &lib_path)?,
+                                    elf.libraries().iter().map(ToString::to_string).collect(),
+                                ))
+                            } else {
+                                None
+                            }
+                        }
+                        Object::Mach(ref mach) => match mach {
+                            Mach::Fat(_) => None,
+                            Mach::Binary(ref macho) => {
+                                if dylib.compatible(&obj) {
+                                    Some((
+                                        self.read_rpath(macho, &lib_path)?,
+                                        macho.libraries().iter().map(ToString::to_string).collect(),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            }
+                        },
+                        Object::PE(ref pe) => {
+                            if dylib.compatible(&obj) {
+                                Some((
+                                    self.read_rpath(pe, &lib_path)?,
+                                    pe.libraries().iter().map(ToString::to_string).collect(),
+                                ))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    } {
                         return Ok(Library {
-                            name: lib.to_string(),
+                            name: lib_name.to_string(),
                             path: lib_path.to_path_buf(),
                             realpath: fs::canonicalize(lib_path).ok(),
                             needed,
                             rpath,
-                            runpath,
                         });
                     }
                 }
             }
         }
         Ok(Library {
-            name: lib.to_string(),
-            path: PathBuf::from(lib),
+            name: lib_name.to_string(),
+            path: PathBuf::from(lib_name),
             realpath: None,
             needed: Vec::new(),
             rpath: Vec::new(),
-            runpath: Vec::new(),
         })
     }
 }
@@ -319,33 +355,4 @@ fn find_musl_libc() -> Result<Option<PathBuf>, Error> {
         Some(Ok(path)) => Ok(Some(path)),
         _ => Ok(None),
     }
-}
-
-/// See if two ELFs are compatible
-///
-/// This compares the aspects of the ELF to see if they're compatible:
-/// bit size, endianness, machine type, and operating system.
-fn compatible_elfs(elf1: &Elf, elf2: &Elf) -> bool {
-    if elf1.is_64 != elf2.is_64 {
-        return false;
-    }
-    if elf1.little_endian != elf2.little_endian {
-        return false;
-    }
-    if elf1.header.e_machine != elf2.header.e_machine {
-        return false;
-    }
-    let compatible_osabis = &[
-        ELFOSABI_NONE, // ELFOSABI_NONE / ELFOSABI_SYSV
-        ELFOSABI_GNU,  // ELFOSABI_GNU / ELFOSABI_LINUX
-    ];
-    let osabi1 = elf1.header.e_ident[EI_OSABI];
-    let osabi2 = elf2.header.e_ident[EI_OSABI];
-    if osabi1 != osabi2
-        && !compatible_osabis.contains(&osabi1)
-        && !compatible_osabis.contains(&osabi2)
-    {
-        return false;
-    }
-    true
 }
