@@ -11,6 +11,7 @@ use goblin::elf::{
     header::{EI_OSABI, ELFOSABI_GNU, ELFOSABI_NONE},
     Elf,
 };
+use memmap2::Mmap;
 
 mod errors;
 pub mod ld_so_conf;
@@ -128,7 +129,14 @@ impl DependencyAnalyzer {
         let path = path.as_ref();
         self.load_ld_paths(path)?;
 
-        let bytes = fs::read(path)?;
+        let file = fs::File::open(path)?;
+        // SAFETY: The file is memory-mapped read-only and we only perform read operations
+        // on the mapped bytes. We do not prevent other processes from modifying the file
+        // concurrently; such external modification is accepted as a risk for this tool.
+        //
+        // Note: The file handle does not need to remain open after mapping on POSIX systems,
+        // but we keep it in scope until parsing is complete for clarity and portability.
+        let bytes = unsafe { Mmap::map(&file)? };
         let elf = Elf::parse(&bytes)?;
 
         let (mut rpaths, runpaths) = self.read_rpath_runpath(&elf, path)?;
@@ -282,7 +290,14 @@ impl DependencyAnalyzer {
         {
             // FIXME: readlink to get real path
             if lib_path.exists() {
-                let bytes = fs::read(&lib_path)?;
+                let file = fs::File::open(&lib_path)?;
+                // SAFETY: The file is memory-mapped read-only and we only perform read operations
+                // on the mapped bytes. We do not prevent other processes from modifying the file
+                // concurrently; such external modification is accepted as a risk for this tool.
+                //
+                // Note: The file handle does not need to remain open after mapping on POSIX systems,
+                // but we keep it in scope until parsing is complete for clarity and portability.
+                let bytes = unsafe { Mmap::map(&file)? };
                 if let Ok(lib_elf) = Elf::parse(&bytes) {
                     if compatible_elfs(elf, &lib_elf) {
                         let needed = lib_elf.libraries.iter().map(ToString::to_string).collect();
