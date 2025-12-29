@@ -18,7 +18,7 @@ Add it to your ``Cargo.toml``:
 
 ```toml
 [dependencies]
-lddtree = "0.3"
+lddtree = "0.4"
 ```
 
 ## Command line utility
