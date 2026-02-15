@@ -62,8 +62,7 @@ pub fn parse_ld_so_conf(
         if line.starts_with("#") {
             continue;
         }
-        if line.starts_with("include ") {
-            let include_path = &line[8..];
+        if let Some(include_path) = line.strip_prefix("include ") {
             let include_path = if !include_path.starts_with('/') {
                 let parent = path.parent().unwrap();
                 parent.join(include_path).display().to_string()
