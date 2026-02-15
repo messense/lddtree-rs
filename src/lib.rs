@@ -1,4 +1,6 @@
-//! Read the ELF dependency tree.
+//! Read the dynamic library dependency tree.
+//!
+//! Supports ELF (Linux), Mach-O (macOS), and PE (Windows) binary formats.
 //!
 //! This does not work like `ldd` in that we do not execute/load code (only read
 //! files on disk).
@@ -55,6 +57,14 @@ pub struct DependencyTree {
     pub rpath: Vec<String>,
 }
 
+/// The binary format being analyzed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinaryFormat {
+    Elf,
+    MachO,
+    PE,
+}
+
 trait InspectDylib {
     /// Runtime library search paths.
     fn rpaths(&self) -> &[&str];
@@ -64,6 +74,8 @@ trait InspectDylib {
     fn interpreter(&self) -> Option<&str>;
     /// See if two dynamic libraries are compatible.
     fn compatible(&self, other: &Object) -> bool;
+    /// The binary format of this dylib.
+    fn format(&self) -> BinaryFormat;
 }
 
 /// Library dependency analyzer
@@ -74,6 +86,10 @@ pub struct DependencyAnalyzer {
     additional_ld_paths: Vec<PathBuf>,
     rpaths: Vec<String>,
     root: PathBuf,
+    /// Path to the main executable being analyzed (used for @executable_path on macOS)
+    executable_path: Option<PathBuf>,
+    /// The detected binary format
+    format: Option<BinaryFormat>,
 }
 
 impl Default for DependencyAnalyzer {
@@ -91,6 +107,8 @@ impl DependencyAnalyzer {
             additional_ld_paths: Vec::new(),
             rpaths: Vec::new(),
             root,
+            executable_path: None,
+            format: None,
         }
     }
 
@@ -115,8 +133,20 @@ impl DependencyAnalyzer {
     fn read_rpath(&self, lib: &impl InspectDylib, path: &Path) -> Result<Vec<String>, Error> {
         let mut rpaths = Vec::new();
         for rpath in lib.rpaths() {
-            if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
-                rpaths = ld_paths;
+            if lib.format() == BinaryFormat::Elf {
+                if let Ok(ld_paths) = self.parse_ld_paths(rpath, path) {
+                    rpaths = ld_paths;
+                }
+            } else {
+                // For MachO, rpaths may contain @executable_path or @loader_path
+                // that need resolution, but we store them as-is for now and resolve
+                // them during find_library
+                let resolved = self.resolve_macho_path(rpath, path);
+                if let Some(resolved) = resolved {
+                    rpaths.push(resolved.display().to_string());
+                } else {
+                    rpaths.push(rpath.to_string());
+                }
             }
         }
         Ok(rpaths)
@@ -125,7 +155,7 @@ impl DependencyAnalyzer {
     /// Analyze the given binary.
     pub fn analyze(mut self, path: impl AsRef<Path>) -> Result<DependencyTree, Error> {
         let path = path.as_ref();
-        self.load_ld_paths(path)?;
+        self.executable_path = Some(path.to_path_buf());
 
         let file = fs::File::open(path)?;
         // SAFETY: The file is memory-mapped read-only and we only perform read operations
@@ -133,12 +163,59 @@ impl DependencyAnalyzer {
         // concurrently; such external modification is accepted as a risk for this tool.
         let bytes = unsafe { Mmap::map(&file)? };
         let dep_tree = match Object::parse(&bytes)? {
-            Object::Elf(elf) => self.analyze_dylib(path, elf)?,
-            Object::Mach(mach) => match mach {
-                Mach::Fat(_) => return Err(Error::UnsupportedBinary),
-                Mach::Binary(macho) => self.analyze_dylib(path, macho)?,
-            },
-            Object::PE(pe) => self.analyze_dylib(path, pe)?,
+            Object::Elf(elf) => {
+                self.format = Some(BinaryFormat::Elf);
+                self.load_elf_paths(path)?;
+                self.analyze_dylib(path, elf)?
+            }
+            Object::Mach(mach) => {
+                self.format = Some(BinaryFormat::MachO);
+                self.load_macho_paths(path)?;
+                match mach {
+                    Mach::Fat(fat) => {
+                        // For fat/universal binaries, find the best matching architecture.
+                        // Prefer the native architecture, otherwise use the first one.
+                        let arches: Vec<_> = fat.into_iter().collect();
+                        let mut selected = None;
+                        for (i, arch) in arches.iter().enumerate() {
+                            if let Ok(goblin::mach::SingleArch::MachO(ref macho)) = arch {
+                                if selected.is_none() {
+                                    selected = Some(i);
+                                }
+                                // Prefer native arch
+                                #[cfg(target_arch = "x86_64")]
+                                if macho.header.cputype
+                                    == goblin::mach::cputype::CPU_TYPE_X86_64
+                                {
+                                    selected = Some(i);
+                                    break;
+                                }
+                                #[cfg(target_arch = "aarch64")]
+                                if macho.header.cputype == goblin::mach::cputype::CPU_TYPE_ARM64
+                                {
+                                    selected = Some(i);
+                                    break;
+                                }
+                            }
+                        }
+                        match selected {
+                            Some(idx) => match arches.into_iter().nth(idx) {
+                                Some(Ok(goblin::mach::SingleArch::MachO(macho))) => {
+                                    self.analyze_dylib(path, macho)?
+                                }
+                                _ => return Err(Error::UnsupportedBinary),
+                            },
+                            None => return Err(Error::UnsupportedBinary),
+                        }
+                    }
+                    Mach::Binary(macho) => self.analyze_dylib(path, macho)?,
+                }
+            }
+            Object::PE(pe) => {
+                self.format = Some(BinaryFormat::PE);
+                self.load_pe_paths(path)?;
+                self.analyze_dylib(path, pe)?
+            }
             _ => return Err(Error::UnsupportedBinary),
         };
         Ok(dep_tree)
@@ -159,7 +236,7 @@ impl DependencyAnalyzer {
             if libraries.contains_key(&lib_name) {
                 continue;
             }
-            let library = self.find_library(&dylib, &lib_name)?;
+            let library = self.find_library(&dylib, &lib_name, path)?;
             libraries.insert(lib_name, library.clone());
             stack.extend(library.needed);
         }
@@ -195,7 +272,9 @@ impl DependencyAnalyzer {
         Ok(dep_tree)
     }
 
-    /// Parse the colon-delimited list of paths and apply ldso rules
+    // ---- ELF-specific path loading ----
+
+    /// Parse the colon-delimited list of paths and apply ldso rules (ELF-specific)
     fn parse_ld_paths(&self, ld_path: &str, dylib_path: &Path) -> Result<Vec<String>, Error> {
         let mut paths = Vec::new();
         for path in ld_path.split(':') {
@@ -220,7 +299,7 @@ impl DependencyAnalyzer {
         Ok(paths)
     }
 
-    fn load_ld_paths(&mut self, dylib_path: &Path) -> Result<(), Error> {
+    fn load_elf_paths(&mut self, dylib_path: &Path) -> Result<(), Error> {
         #[cfg(unix)]
         if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
             if self.root == Path::new("/") {
@@ -272,9 +351,169 @@ impl DependencyAnalyzer {
         Ok(())
     }
 
-    /// Try to locate a `lib_name` that is compatible to `dylib`
-    fn find_library(&self, dylib: &impl InspectDylib, lib_name: &str) -> Result<Library, Error> {
-        for lib_path in self
+    // ---- MachO-specific path loading ----
+
+    /// Load macOS-specific library search paths.
+    ///
+    /// macOS dyld search order:
+    /// 1. DYLD_LIBRARY_PATH (environment)
+    /// 2. rpaths (for @rpath/ prefixed names)
+    /// 3. The library's install name path
+    /// 4. DYLD_FALLBACK_LIBRARY_PATH (defaults to ~/lib:/usr/local/lib:/lib:/usr/lib)
+    ///
+    /// See: http://clarkkromenaker.com/post/library-dynamic-loading-mac/
+    /// See: https://matthew-brett.github.io/docosx/mac_runtime_link.html
+    fn load_macho_paths(&mut self, _dylib_path: &Path) -> Result<(), Error> {
+        // DYLD_LIBRARY_PATH: searched before everything else
+        if let Ok(dyld_lib_path) = env::var("DYLD_LIBRARY_PATH") {
+            for path in dyld_lib_path.split(':') {
+                if !path.is_empty() {
+                    self.env_ld_paths.push(path.to_string());
+                }
+            }
+        }
+        // DYLD_FALLBACK_LIBRARY_PATH: searched after rpaths and install name
+        // If not set, defaults to ~/lib:/usr/local/lib:/lib:/usr/lib
+        match env::var("DYLD_FALLBACK_LIBRARY_PATH") {
+            Ok(fallback_path) => {
+                for path in fallback_path.split(':') {
+                    if !path.is_empty() {
+                        self.conf_ld_paths.push(path.to_string());
+                    }
+                }
+            }
+            Err(_) => {
+                // Default fallback paths
+                if let Ok(home) = env::var("HOME") {
+                    self.conf_ld_paths.push(format!("{}/lib", home));
+                }
+                let root_str = self.root.display().to_string();
+                let root_str = root_str.strip_suffix('/').unwrap_or(&root_str);
+                self.conf_ld_paths
+                    .push(format!("{}/usr/local/lib", root_str));
+                self.conf_ld_paths.push(format!("{}/lib", root_str));
+                self.conf_ld_paths.push(format!("{}/usr/lib", root_str));
+            }
+        }
+        self.conf_ld_paths.dedup();
+        Ok(())
+    }
+
+    /// Resolve a macOS path variable (@executable_path, @loader_path, @rpath).
+    ///
+    /// - `@executable_path/` → replaced with the directory of the main executable
+    /// - `@loader_path/` → replaced with the directory of the binary that contains the load command
+    /// - `@rpath/` → returns None (must be resolved by iterating rpaths)
+    fn resolve_macho_path(&self, path: &str, loader_path: &Path) -> Option<PathBuf> {
+        if let Some(rest) = path.strip_prefix("@executable_path/") {
+            let exe_dir = self
+                .executable_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .unwrap_or(Path::new("."));
+            Some(exe_dir.join(rest))
+        } else if let Some(rest) = path.strip_prefix("@loader_path/") {
+            let loader_dir = loader_path.parent().unwrap_or(Path::new("."));
+            Some(loader_dir.join(rest))
+        } else if path.starts_with("@rpath/") {
+            // @rpath must be resolved by iterating rpaths - return None
+            None
+        } else {
+            // Absolute or relative path
+            Some(PathBuf::from(path))
+        }
+    }
+
+    // ---- PE-specific path loading ----
+
+    /// Load Windows PE-specific library search paths.
+    ///
+    /// Windows DLL search order (Standard Search Order):
+    /// 1. The directory from which the application loaded
+    /// 2. The system directory (e.g., C:\Windows\System32)
+    /// 3. The 16-bit system directory (e.g., C:\Windows\System)
+    /// 4. The Windows directory (e.g., C:\Windows)
+    /// 5. The current directory
+    /// 6. Directories listed in the PATH environment variable
+    ///
+    /// See: https://stefanoborini.com/windows-dll-search-path/
+    /// See: https://stmxcsr.com/dll-search-order.html
+    fn load_pe_paths(&mut self, dylib_path: &Path) -> Result<(), Error> {
+        let root_str = self.root.display().to_string();
+        let root_str = root_str.strip_suffix('/').unwrap_or(&root_str);
+        let root_str = root_str.strip_suffix('\\').unwrap_or(root_str);
+
+        // 1. Application directory
+        if let Some(app_dir) = dylib_path.parent() {
+            self.env_ld_paths
+                .push(app_dir.display().to_string());
+        }
+
+        // 2-4. System directories (relative to root)
+        // Try common Windows system directory layouts
+        for sys_dir in &[
+            "Windows/System32",
+            "Windows/System",
+            "Windows",
+            "windows/system32",
+            "windows/system",
+            "windows",
+            // Wine-style paths
+            "drive_c/windows/system32",
+            "drive_c/windows",
+        ] {
+            let full_path = format!("{}/{}", root_str, sys_dir);
+            if Path::new(&full_path).is_dir() {
+                self.conf_ld_paths.push(full_path);
+            }
+        }
+
+        // 5. Current directory
+        if let Ok(cwd) = env::current_dir() {
+            self.conf_ld_paths.push(cwd.display().to_string());
+        }
+
+        // 6. PATH environment variable
+        let path_sep = if cfg!(windows) { ';' } else { ':' };
+        if let Ok(path_env) = env::var("PATH") {
+            for path in path_env.split(path_sep) {
+                if !path.is_empty() {
+                    self.conf_ld_paths.push(path.to_string());
+                }
+            }
+        }
+
+        self.conf_ld_paths.dedup();
+        Ok(())
+    }
+
+    // ---- Library finding ----
+
+    /// Try to locate a `lib_name` that is compatible to `dylib`.
+    ///
+    /// Dispatches to format-specific find logic based on the binary format.
+    fn find_library(
+        &self,
+        dylib: &impl InspectDylib,
+        lib_name: &str,
+        loader_path: &Path,
+    ) -> Result<Library, Error> {
+        match dylib.format() {
+            BinaryFormat::MachO => self.find_macho_library(dylib, lib_name, loader_path),
+            BinaryFormat::PE => self.find_pe_library(dylib, lib_name),
+            BinaryFormat::Elf => self.find_elf_library(dylib, lib_name),
+        }
+    }
+
+    /// Try to locate an ELF library.
+    ///
+    /// Search order: rpaths, LD_LIBRARY_PATH, ld.so.conf paths, additional paths.
+    fn find_elf_library(
+        &self,
+        dylib: &impl InspectDylib,
+        lib_name: &str,
+    ) -> Result<Library, Error> {
+        let candidates: Vec<PathBuf> = self
             .rpaths
             .iter()
             .chain(self.env_ld_paths.iter())
@@ -289,58 +528,159 @@ impl DependencyAnalyzer {
                     .iter()
                     .map(|ld_path| ld_path.join(lib_name)),
             )
-        {
-            // FIXME: readlink to get real path
-            if lib_path.exists() {
-                let file = fs::File::open(&lib_path)?;
-                // SAFETY: The file is memory-mapped read-only and we only perform read operations
-                // on the mapped bytes.
-                let bytes = unsafe { Mmap::map(&file)? };
-                if let Ok(obj) = Object::parse(&bytes) {
-                    if let Some((rpath, needed)) = match obj {
-                        Object::Elf(ref elf) => {
-                            if dylib.compatible(&obj) {
-                                Some((
-                                    self.read_rpath(elf, &lib_path)?,
-                                    elf.libraries().iter().map(ToString::to_string).collect(),
-                                ))
-                            } else {
-                                None
-                            }
+            .collect();
+        self.try_library_candidates(dylib, lib_name, &candidates)
+    }
+
+    /// Try to locate a Mach-O library.
+    ///
+    /// Handles @rpath/, @loader_path/, @executable_path/ prefixes.
+    /// Search order:
+    /// 1. DYLD_LIBRARY_PATH
+    /// 2. @rpath expansion (if lib_name starts with @rpath/)
+    /// 3. @executable_path / @loader_path resolution
+    /// 4. Direct path (absolute install name)
+    /// 5. DYLD_FALLBACK_LIBRARY_PATH
+    /// 6. Additional user-provided paths
+    fn find_macho_library(
+        &self,
+        dylib: &impl InspectDylib,
+        lib_name: &str,
+        loader_path: &Path,
+    ) -> Result<Library, Error> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        // Extract the filename for searching in DYLD_LIBRARY_PATH etc.
+        let file_name = Path::new(lib_name)
+            .file_name()
+            .unwrap_or_default()
+            .to_str()
+            .unwrap_or(lib_name);
+
+        // 1. DYLD_LIBRARY_PATH (searched first, using just the leaf filename)
+        for path in &self.env_ld_paths {
+            candidates.push(PathBuf::from(path).join(file_name));
+        }
+
+        // 2-3. Handle path variable prefixes
+        if let Some(rest) = lib_name.strip_prefix("@rpath/") {
+            // Search each rpath for the library
+            for rpath in &self.rpaths {
+                candidates.push(PathBuf::from(rpath).join(rest));
+            }
+        } else if let Some(resolved) = self.resolve_macho_path(lib_name, loader_path) {
+            // @executable_path, @loader_path, or absolute path
+            candidates.push(resolved);
+        }
+
+        // 4. DYLD_FALLBACK_LIBRARY_PATH (using just the leaf filename)
+        for path in &self.conf_ld_paths {
+            candidates.push(PathBuf::from(path).join(file_name));
+        }
+
+        // 5. Additional user-provided paths
+        for path in &self.additional_ld_paths {
+            candidates.push(path.join(file_name));
+        }
+
+        self.try_library_candidates(dylib, lib_name, &candidates)
+    }
+
+    /// Try to locate a PE library (DLL).
+    ///
+    /// Search order:
+    /// 1. Application directory (from env_ld_paths)
+    /// 2. System directories (from conf_ld_paths)
+    /// 3. PATH directories (from conf_ld_paths)
+    /// 4. Additional user-provided paths
+    fn find_pe_library(
+        &self,
+        dylib: &impl InspectDylib,
+        lib_name: &str,
+    ) -> Result<Library, Error> {
+        let candidates: Vec<PathBuf> = self
+            .env_ld_paths
+            .iter()
+            .chain(self.conf_ld_paths.iter())
+            .map(|ld_path| PathBuf::from(ld_path).join(lib_name))
+            .chain(
+                self.additional_ld_paths
+                    .iter()
+                    .map(|ld_path| ld_path.join(lib_name)),
+            )
+            .collect();
+        self.try_library_candidates(dylib, lib_name, &candidates)
+    }
+
+    /// Try a list of candidate paths and return the first compatible library found.
+    fn try_library_candidates(
+        &self,
+        dylib: &impl InspectDylib,
+        lib_name: &str,
+        candidates: &[PathBuf],
+    ) -> Result<Library, Error> {
+        for lib_path in candidates {
+            if !lib_path.exists() {
+                continue;
+            }
+            let file = match fs::File::open(lib_path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            // SAFETY: The file is memory-mapped read-only and we only perform read operations
+            // on the mapped bytes.
+            let bytes = match unsafe { Mmap::map(&file) } {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if let Ok(obj) = Object::parse(&bytes) {
+                if let Some((rpath, needed)) = match obj {
+                    Object::Elf(ref elf) => {
+                        if dylib.compatible(&obj) {
+                            Some((
+                                self.read_rpath(elf, lib_path)?,
+                                elf.libraries().iter().map(ToString::to_string).collect(),
+                            ))
+                        } else {
+                            None
                         }
-                        Object::Mach(ref mach) => match mach {
-                            Mach::Fat(_) => None,
-                            Mach::Binary(ref macho) => {
-                                if dylib.compatible(&obj) {
-                                    Some((
-                                        self.read_rpath(macho, &lib_path)?,
-                                        macho.libraries().iter().map(ToString::to_string).collect(),
-                                    ))
-                                } else {
-                                    None
-                                }
-                            }
-                        },
-                        Object::PE(ref pe) => {
-                            if dylib.compatible(&obj) {
-                                Some((
-                                    self.read_rpath(pe, &lib_path)?,
-                                    pe.libraries().iter().map(ToString::to_string).collect(),
-                                ))
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    } {
-                        return Ok(Library {
-                            name: lib_name.to_string(),
-                            path: lib_path.to_path_buf(),
-                            realpath: fs::canonicalize(lib_path).ok(),
-                            needed,
-                            rpath,
-                        });
                     }
+                    Object::Mach(ref mach) => match mach {
+                        Mach::Fat(_) => None,
+                        Mach::Binary(ref macho) => {
+                            if dylib.compatible(&obj) {
+                                Some((
+                                    self.read_rpath(macho, lib_path)?,
+                                    macho
+                                        .libraries()
+                                        .iter()
+                                        .map(ToString::to_string)
+                                        .collect(),
+                                ))
+                            } else {
+                                None
+                            }
+                        }
+                    },
+                    Object::PE(ref pe) => {
+                        if dylib.compatible(&obj) {
+                            Some((
+                                self.read_rpath(pe, lib_path)?,
+                                pe.libraries().iter().map(ToString::to_string).collect(),
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                } {
+                    return Ok(Library {
+                        name: lib_name.to_string(),
+                        path: lib_path.to_path_buf(),
+                        realpath: fs::canonicalize(lib_path).ok(),
+                        needed,
+                        rpath,
+                    });
                 }
             }
         }

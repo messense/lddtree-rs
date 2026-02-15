@@ -3,7 +3,7 @@ use goblin::{
     Object,
 };
 
-use crate::InspectDylib;
+use crate::{BinaryFormat, InspectDylib};
 
 impl InspectDylib for MachO<'_> {
     fn rpaths(&self) -> &[&str] {
@@ -49,5 +49,9 @@ impl InspectDylib for MachO<'_> {
             },
             _ => false,
         }
+    }
+
+    fn format(&self) -> BinaryFormat {
+        BinaryFormat::MachO
     }
 }

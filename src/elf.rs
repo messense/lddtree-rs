@@ -6,7 +6,7 @@ use goblin::{
     Object,
 };
 
-use crate::InspectDylib;
+use crate::{BinaryFormat, InspectDylib};
 
 impl InspectDylib for Elf<'_> {
     fn rpaths(&self) -> &[&str] {
@@ -57,5 +57,9 @@ impl InspectDylib for Elf<'_> {
             }
             _ => false,
         }
+    }
+
+    fn format(&self) -> BinaryFormat {
+        BinaryFormat::Elf
     }
 }

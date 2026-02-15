@@ -1,6 +1,6 @@
 use goblin::{pe::PE, Object};
 
-use crate::InspectDylib;
+use crate::{BinaryFormat, InspectDylib};
 
 impl InspectDylib for PE<'_> {
     fn rpaths(&self) -> &[&str] {
@@ -28,5 +28,9 @@ impl InspectDylib for PE<'_> {
             }
             _ => false,
         }
+    }
+
+    fn format(&self) -> BinaryFormat {
+        BinaryFormat::PE
     }
 }
