@@ -465,17 +465,29 @@ impl DependencyAnalyzer {
             }
         }
 
-        // 5. Current directory
-        if let Ok(cwd) = env::current_dir() {
-            self.conf_ld_paths.push(cwd.display().to_string());
-        }
-
-        // 6. PATH environment variable
-        let path_sep = if cfg!(windows) { ';' } else { ':' };
-        if let Ok(path_env) = env::var("PATH") {
-            for path in path_env.split(path_sep) {
-                if !path.is_empty() {
-                    self.conf_ld_paths.push(path.to_string());
+        // 5-6. Current directory and PATH environment variable
+        // Only use these when analyzing against the real filesystem root,
+        // since they contain absolute paths that don't make sense with a
+        // custom sysroot. This mirrors how ELF only uses LD_LIBRARY_PATH
+        // when root is "/".
+        #[cfg(windows)]
+        {
+            let is_system_root = self.root == Path::new("/")
+                || self.root == Path::new("\\")
+                || self
+                    .root
+                    .to_str()
+                    .is_some_and(|s| s.len() <= 3 && s.contains(':'));
+            if is_system_root {
+                if let Ok(cwd) = env::current_dir() {
+                    self.conf_ld_paths.push(cwd.display().to_string());
+                }
+                if let Ok(path_env) = env::var("PATH") {
+                    for path in path_env.split(';') {
+                        if !path.is_empty() {
+                            self.conf_ld_paths.push(path.to_string());
+                        }
+                    }
                 }
             }
         }
