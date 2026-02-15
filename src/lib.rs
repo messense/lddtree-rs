@@ -87,8 +87,6 @@ pub struct DependencyAnalyzer {
     root: PathBuf,
     /// Path to the main executable being analyzed (used for @executable_path on macOS)
     executable_path: Option<PathBuf>,
-    /// The detected binary format
-    format: Option<BinaryFormat>,
 }
 
 impl Default for DependencyAnalyzer {
@@ -96,6 +94,9 @@ impl Default for DependencyAnalyzer {
         Self::new(PathBuf::from("/"))
     }
 }
+
+/// Extracted library info: (rpaths, needed library names).
+type LibInfo = (Vec<String>, Vec<String>);
 
 impl DependencyAnalyzer {
     /// Create a new dependency analyzer.
@@ -106,7 +107,6 @@ impl DependencyAnalyzer {
             additional_ld_paths: Vec::new(),
             root,
             executable_path: None,
-            format: None,
         }
     }
 
@@ -170,12 +170,10 @@ impl DependencyAnalyzer {
         let bytes = unsafe { Mmap::map(&file)? };
         let dep_tree = match Object::parse(&bytes)? {
             Object::Elf(elf) => {
-                self.format = Some(BinaryFormat::Elf);
                 self.load_elf_paths(path)?;
                 self.analyze_dylib(path, elf)?
             }
             Object::Mach(mach) => {
-                self.format = Some(BinaryFormat::MachO);
                 self.load_macho_paths(path)?;
                 match mach {
                     Mach::Fat(fat) => {
@@ -215,7 +213,6 @@ impl DependencyAnalyzer {
                 }
             }
             Object::PE(pe) => {
-                self.format = Some(BinaryFormat::PE);
                 self.load_pe_paths(path)?;
                 self.analyze_dylib(path, pe)?
             }
@@ -737,6 +734,25 @@ impl DependencyAnalyzer {
         Ok(not_found_library(lib_name))
     }
 
+    /// Check if a parsed binary is compatible with the main binary and extract
+    /// its rpaths and needed libraries.
+    fn check_compatible(
+        &self,
+        dylib: &impl InspectDylib,
+        lib: &impl InspectDylib,
+        obj: &Object,
+        lib_path: &Path,
+    ) -> Result<Option<LibInfo>, Error> {
+        if dylib.compatible(obj) {
+            Ok(Some((
+                self.read_rpath(lib, lib_path)?,
+                lib.libraries().iter().map(ToString::to_string).collect(),
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Try to parse a single candidate file and check compatibility.
     ///
     /// Opens the file, memory-maps it, parses the binary format, checks that it is
@@ -769,16 +785,7 @@ impl DependencyAnalyzer {
         };
 
         let info = match obj {
-            Object::Elf(ref elf) => {
-                if dylib.compatible(&obj) {
-                    Some((
-                        self.read_rpath(elf, lib_path)?,
-                        elf.libraries().iter().map(ToString::to_string).collect(),
-                    ))
-                } else {
-                    None
-                }
-            }
+            Object::Elf(ref elf) => self.check_compatible(dylib, elf, &obj, lib_path)?,
             Object::Mach(ref mach) => match mach {
                 Mach::Fat(ref fat) => {
                     // Fat/universal Mach-O: iterate through architecture slices to find
@@ -786,49 +793,31 @@ impl DependencyAnalyzer {
                     // temporary Object for each slice to reuse the compatible() trait
                     // method, which checks cputype, bitness, and endianness.
                     //
-                    // MultiArch::into_iter() re-parses from the underlying byte buffer
-                    // on each call, so the fat binary can be iterated multiple times
-                    // (compatible() may have already iterated it).
+                    // MultiArch re-parses from the underlying byte buffer on each
+                    // iteration, so the fat binary can be iterated multiple times.
                     let mut found = None;
                     for arch in fat.into_iter() {
                         if let Ok(goblin::mach::SingleArch::MachO(inner)) = arch {
+                            // Wrap in Object to reuse compatible(), then unwrap to
+                            // extract rpaths/libraries from the matched architecture.
                             let inner_obj = Object::Mach(Mach::Binary(inner));
                             if dylib.compatible(&inner_obj) {
-                                // Extract the inner MachO back from the wrapper.
-                                // This is safe because we just constructed inner_obj above.
-                                if let Object::Mach(Mach::Binary(ref macho)) = inner_obj {
-                                    found = Some((
-                                        self.read_rpath(macho, lib_path)?,
-                                        macho.libraries().iter().map(ToString::to_string).collect(),
-                                    ));
-                                }
+                                let Object::Mach(Mach::Binary(ref macho)) = inner_obj else {
+                                    unreachable!()
+                                };
+                                found = Some((
+                                    self.read_rpath(macho, lib_path)?,
+                                    macho.libraries().iter().map(ToString::to_string).collect(),
+                                ));
                                 break;
                             }
                         }
                     }
                     found
                 }
-                Mach::Binary(ref macho) => {
-                    if dylib.compatible(&obj) {
-                        Some((
-                            self.read_rpath(macho, lib_path)?,
-                            macho.libraries().iter().map(ToString::to_string).collect(),
-                        ))
-                    } else {
-                        None
-                    }
-                }
+                Mach::Binary(ref macho) => self.check_compatible(dylib, macho, &obj, lib_path)?,
             },
-            Object::PE(ref pe) => {
-                if dylib.compatible(&obj) {
-                    Some((
-                        self.read_rpath(pe, lib_path)?,
-                        pe.libraries().iter().map(ToString::to_string).collect(),
-                    ))
-                } else {
-                    None
-                }
-            }
+            Object::PE(ref pe) => self.check_compatible(dylib, pe, &obj, lib_path)?,
             _ => None,
         };
 
