@@ -52,5 +52,20 @@ fn test_pe() {
             "api-ms-win-crt-stdio-l1-1-0.dll"
         ]
     );
-    assert_eq!(deps.libraries.len(), 4);
+    // All directly needed libraries must appear in the dependency map
+    for name in &deps.needed {
+        assert!(
+            deps.libraries.contains_key(name.as_str()),
+            "missing library: {name}"
+        );
+    }
+    // API set DLLs are virtual — they never exist as real files on disk
+    assert!(!deps.libraries["api-ms-win-crt-runtime-l1-1-0.dll"].found());
+    assert!(!deps.libraries["api-ms-win-crt-stdio-l1-1-0.dll"].found());
+    // On Windows, real system DLLs (e.g., KERNEL32.dll) are found on disk and
+    // their transitive dependencies are discovered, so the total library count
+    // exceeds the 4 direct deps.  On Linux/macOS no Windows system directories
+    // exist, so all non-API-set libs are recorded as not-found and the count
+    // stays at 4.
+    assert!(deps.libraries.len() >= 4);
 }
