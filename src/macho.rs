@@ -1,6 +1,6 @@
 use goblin::{
-    mach::{Mach, MachO},
     Object,
+    mach::{Mach, MachO},
 };
 
 use crate::{BinaryFormat, InspectDylib};
@@ -30,10 +30,10 @@ impl InspectDylib for MachO<'_> {
             Object::Mach(mach) => match mach {
                 Mach::Fat(fat) => {
                     for macho in fat {
-                        if let Ok(goblin::mach::SingleArch::MachO(macho)) = macho {
-                            if self.compatible(&Object::Mach(Mach::Binary(macho))) {
-                                return true;
-                            }
+                        if let Ok(goblin::mach::SingleArch::MachO(macho)) = macho
+                            && self.compatible(&Object::Mach(Mach::Binary(macho)))
+                        {
+                            return true;
                         }
                     }
                     false

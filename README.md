@@ -25,7 +25,7 @@ Add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lddtree = "0.4"
+lddtree = "0.5"
 ```
 
 ## Usage

@@ -1,4 +1,4 @@
-use goblin::{pe::PE, Object};
+use goblin::{Object, pe::PE};
 
 use crate::{BinaryFormat, InspectDylib};
 

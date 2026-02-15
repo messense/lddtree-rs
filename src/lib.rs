@@ -9,8 +9,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use fs_err as fs;
-use goblin::mach::Mach;
 use goblin::Object;
+use goblin::mach::Mach;
 use memmap2::Mmap;
 
 mod elf;
@@ -287,26 +287,26 @@ impl DependencyAnalyzer {
         }
 
         let interpreter = dylib.interpreter().map(|interp| interp.to_string());
-        if let Some(ref interp) = interpreter {
-            if !libraries.contains_key(interp) {
-                let interp_path = self.root.join(interp.strip_prefix('/').unwrap_or(interp));
-                let interp_name = interp_path
-                    .file_name()
-                    .expect("missing filename")
-                    .to_str()
-                    .expect("Filename isn't valid Unicode");
-                let interp_realpath = fs::canonicalize(PathBuf::from(&interp_path)).ok();
-                libraries.insert(
-                    interp.to_string(),
-                    Library {
-                        name: interp_name.to_string(),
-                        path: interp_path,
-                        realpath: interp_realpath,
-                        needed: Vec::new(),
-                        rpath: Vec::new(),
-                    },
-                );
-            }
+        if let Some(ref interp) = interpreter
+            && !libraries.contains_key(interp)
+        {
+            let interp_path = self.root.join(interp.strip_prefix('/').unwrap_or(interp));
+            let interp_name = interp_path
+                .file_name()
+                .expect("missing filename")
+                .to_str()
+                .expect("Filename isn't valid Unicode");
+            let interp_realpath = fs::canonicalize(PathBuf::from(&interp_path)).ok();
+            libraries.insert(
+                interp.to_string(),
+                Library {
+                    name: interp_name.to_string(),
+                    path: interp_path,
+                    realpath: interp_realpath,
+                    needed: Vec::new(),
+                    rpath: Vec::new(),
+                },
+            );
         }
         let dep_tree = DependencyTree {
             interpreter,
@@ -349,10 +349,10 @@ impl DependencyAnalyzer {
 
     fn load_elf_paths(&mut self, _dylib_path: &Path) -> Result<(), Error> {
         #[cfg(unix)]
-        if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
-            if self.root == Path::new("/") {
-                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, _dylib_path)?;
-            }
+        if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH")
+            && self.root == Path::new("/")
+        {
+            self.env_ld_paths = self.parse_ld_paths(&env_ld_path, _dylib_path)?;
         }
         // Load all the paths from a ldso config file
         match find_musl_libc() {
@@ -675,12 +675,12 @@ impl DependencyAnalyzer {
             // @executable_path/..., @loader_path/..., or absolute path.
             // For absolute paths, also probe through the sysroot so that a custom
             // root (e.g., cross-compilation SDK) is searched instead of / on the host.
-            if resolved.is_absolute() {
-                if let Ok(relative) = resolved.strip_prefix("/") {
-                    let sysroot_path = self.root.join(relative);
-                    if sysroot_path != resolved {
-                        candidates.push(sysroot_path);
-                    }
+            if resolved.is_absolute()
+                && let Ok(relative) = resolved.strip_prefix("/")
+            {
+                let sysroot_path = self.root.join(relative);
+                if sysroot_path != resolved {
+                    candidates.push(sysroot_path);
                 }
             }
             candidates.push(resolved);
@@ -720,10 +720,10 @@ impl DependencyAnalyzer {
             .map(|s| Path::new(s.as_str()).to_path_buf())
             .chain(self.additional_ld_paths.iter().cloned());
         for dir in search_dirs {
-            if let Some(lib_path) = find_file_case_insensitive(&dir, lib_name) {
-                if let Some(lib) = self.try_single_candidate(dylib, lib_name, &lib_path)? {
-                    return Ok(lib);
-                }
+            if let Some(lib_path) = find_file_case_insensitive(&dir, lib_name)
+                && let Some(lib) = self.try_single_candidate(dylib, lib_name, &lib_path)?
+            {
+                return Ok(lib);
             }
         }
         Ok(not_found_library(lib_name))
@@ -802,7 +802,7 @@ impl DependencyAnalyzer {
         let info = match obj {
             Object::Elf(ref elf) => self.check_compatible(dylib, elf, &obj, lib_path)?,
             Object::Mach(ref mach) => match mach {
-                Mach::Fat(ref fat) => {
+                Mach::Fat(fat) => {
                     // Fat/universal Mach-O: iterate through architecture slices to find
                     // one that is compatible with the main binary. We construct a
                     // temporary Object for each slice to reuse the compatible() trait
@@ -830,7 +830,7 @@ impl DependencyAnalyzer {
                     }
                     found
                 }
-                Mach::Binary(ref macho) => self.check_compatible(dylib, macho, &obj, lib_path)?,
+                Mach::Binary(macho) => self.check_compatible(dylib, macho, &obj, lib_path)?,
             },
             Object::PE(ref pe) => self.check_compatible(dylib, pe, &obj, lib_path)?,
             _ => None,
@@ -904,12 +904,12 @@ fn find_file_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
         Err(_) => return None,
     };
     for entry in entries.flatten() {
-        if let Some(file_name) = entry.file_name().to_str() {
-            if file_name.to_lowercase() == name_lower {
-                let path = entry.path();
-                if path.is_file() {
-                    return Some(path);
-                }
+        if let Some(file_name) = entry.file_name().to_str()
+            && file_name.to_lowercase() == name_lower
+        {
+            let path = entry.path();
+            if path.is_file() {
+                return Some(path);
             }
         }
     }

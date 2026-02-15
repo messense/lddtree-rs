@@ -1,9 +1,9 @@
 use goblin::{
-    elf::{
-        header::{EI_OSABI, ELFOSABI_GNU, ELFOSABI_NONE},
-        Elf,
-    },
     Object,
+    elf::{
+        Elf,
+        header::{EI_OSABI, ELFOSABI_GNU, ELFOSABI_NONE},
+    },
 };
 
 use crate::{BinaryFormat, InspectDylib};
