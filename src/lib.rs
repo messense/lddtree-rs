@@ -340,11 +340,11 @@ impl DependencyAnalyzer {
         Ok(paths)
     }
 
-    fn load_elf_paths(&mut self, dylib_path: &Path) -> Result<(), Error> {
+    fn load_elf_paths(&mut self, _dylib_path: &Path) -> Result<(), Error> {
         #[cfg(unix)]
         if let Ok(env_ld_path) = env::var("LD_LIBRARY_PATH") {
             if self.root == Path::new("/") {
-                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, dylib_path)?;
+                self.env_ld_paths = self.parse_ld_paths(&env_ld_path, _dylib_path)?;
             }
         }
         // Load all the paths from a ldso config file
