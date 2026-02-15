@@ -180,32 +180,39 @@ impl DependencyAnalyzer {
                         // Fat/universal binaries contain multiple architecture slices
                         // (e.g., x86_64 + arm64). We select the best matching architecture:
                         // prefer the native arch of the host, otherwise take the first one.
-                        let arches: Vec<_> = fat.into_iter().collect();
-                        let mut selected = None;
-                        for (i, arch) in arches.iter().enumerate() {
-                            if let Ok(goblin::mach::SingleArch::MachO(ref macho)) = arch {
-                                if selected.is_none() {
-                                    selected = Some(i);
-                                }
-                                #[cfg(target_arch = "x86_64")]
-                                if macho.header.cputype == goblin::mach::cputype::CPU_TYPE_X86_64 {
-                                    selected = Some(i);
+                        let mut best = None;
+                        for arch in fat.into_iter() {
+                            if let Ok(goblin::mach::SingleArch::MachO(macho)) = arch {
+                                let is_native = {
+                                    #[cfg(target_arch = "x86_64")]
+                                    {
+                                        macho.header.cputype
+                                            == goblin::mach::cputype::CPU_TYPE_X86_64
+                                    }
+                                    #[cfg(target_arch = "aarch64")]
+                                    {
+                                        macho.header.cputype
+                                            == goblin::mach::cputype::CPU_TYPE_ARM64
+                                    }
+                                    #[cfg(not(any(
+                                        target_arch = "x86_64",
+                                        target_arch = "aarch64"
+                                    )))]
+                                    {
+                                        false
+                                    }
+                                };
+                                if is_native {
+                                    best = Some(macho);
                                     break;
                                 }
-                                #[cfg(target_arch = "aarch64")]
-                                if macho.header.cputype == goblin::mach::cputype::CPU_TYPE_ARM64 {
-                                    selected = Some(i);
-                                    break;
+                                if best.is_none() {
+                                    best = Some(macho);
                                 }
                             }
                         }
-                        match selected {
-                            Some(idx) => match arches.into_iter().nth(idx) {
-                                Some(Ok(goblin::mach::SingleArch::MachO(macho))) => {
-                                    self.analyze_dylib(path, macho)?
-                                }
-                                _ => return Err(Error::UnsupportedBinary),
-                            },
+                        match best {
+                            Some(macho) => self.analyze_dylib(path, macho)?,
                             None => return Err(Error::UnsupportedBinary),
                         }
                     }
@@ -696,16 +703,14 @@ impl DependencyAnalyzer {
     /// 3. `PATH` directories (from `conf_ld_paths`)
     /// 4. Additional user-provided paths
     fn find_pe_library(&self, dylib: &impl InspectDylib, lib_name: &str) -> Result<Library, Error> {
-        for dir_str in self.env_ld_paths.iter().chain(self.conf_ld_paths.iter()) {
-            let dir = Path::new(dir_str);
-            if let Some(lib_path) = find_file_case_insensitive(dir, lib_name) {
-                if let Some(lib) = self.try_single_candidate(dylib, lib_name, &lib_path)? {
-                    return Ok(lib);
-                }
-            }
-        }
-        for dir in &self.additional_ld_paths {
-            if let Some(lib_path) = find_file_case_insensitive(dir, lib_name) {
+        let search_dirs = self
+            .env_ld_paths
+            .iter()
+            .chain(self.conf_ld_paths.iter())
+            .map(|s| Path::new(s.as_str()).to_path_buf())
+            .chain(self.additional_ld_paths.iter().cloned());
+        for dir in search_dirs {
+            if let Some(lib_path) = find_file_case_insensitive(&dir, lib_name) {
                 if let Some(lib) = self.try_single_candidate(dylib, lib_name, &lib_path)? {
                     return Ok(lib);
                 }
