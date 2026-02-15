@@ -502,16 +502,27 @@ impl DependencyAnalyzer {
         }
 
         // 2-4. System directories (relative to root)
-        // Try common Windows system directory layouts
+        // On 64-bit Windows, System32 contains 64-bit DLLs and SysWOW64 contains
+        // 32-bit DLLs. When a 32-bit process accesses System32, Windows transparently
+        // redirects to SysWOW64 (the "WoW64 File System Redirector"). Since we don't
+        // emulate this redirector, we include both directories and rely on the
+        // compatible() check to select the correct architecture.
+        //
+        // References:
+        // - https://learn.microsoft.com/en-us/windows/win32/winprog64/file-system-redirector
+        // - delvewheel's _translate_directory() handles System32 ↔ SysWOW64 ↔ Sysnative
         for sys_dir in &[
             "Windows/System32",
+            "Windows/SysWOW64",
             "Windows/System",
             "Windows",
             "windows/system32",
+            "windows/syswow64",
             "windows/system",
             "windows",
             // Wine-style paths
             "drive_c/windows/system32",
+            "drive_c/windows/syswow64",
             "drive_c/windows",
         ] {
             let full_path = format!("{}/{}", root_str, sys_dir);
@@ -645,19 +656,31 @@ impl DependencyAnalyzer {
             for rpath in rpaths {
                 candidates.push(PathBuf::from(rpath).join(rest));
             }
+            // Fallback: also try the @rpath suffix (not just the leaf filename) against
+            // DYLD_FALLBACK_LIBRARY_PATH. This matches delocate's behavior of appending
+            // /usr/local/lib and /usr/lib as fallback search directories for @rpath
+            // resolution. For @rpath/subdir/libfoo.dylib this correctly tries
+            // /usr/local/lib/subdir/libfoo.dylib rather than just /usr/local/lib/libfoo.dylib.
+            for path in &self.conf_ld_paths {
+                candidates.push(PathBuf::from(path).join(rest));
+            }
+            for path in &self.additional_ld_paths {
+                candidates.push(path.join(rest));
+            }
         } else if let Some(resolved) = self.resolve_macho_path(lib_name, loader_path) {
             // @executable_path/..., @loader_path/..., or absolute path
             candidates.push(resolved);
-        }
 
-        // 4. DYLD_FALLBACK_LIBRARY_PATH — searched last, using leaf filename
-        for path in &self.conf_ld_paths {
-            candidates.push(PathBuf::from(path).join(file_name));
-        }
+            // 4. DYLD_FALLBACK_LIBRARY_PATH — for non-@rpath install names, search
+            // using the leaf filename (the path-less library name portion).
+            for path in &self.conf_ld_paths {
+                candidates.push(PathBuf::from(path).join(file_name));
+            }
 
-        // 5. Additional user-provided paths
-        for path in &self.additional_ld_paths {
-            candidates.push(path.join(file_name));
+            // 5. Additional user-provided paths
+            for path in &self.additional_ld_paths {
+                candidates.push(path.join(file_name));
+            }
         }
 
         self.try_library_candidates(dylib, lib_name, &candidates)
