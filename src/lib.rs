@@ -184,15 +184,12 @@ impl DependencyAnalyzer {
                                 }
                                 // Prefer native arch
                                 #[cfg(target_arch = "x86_64")]
-                                if macho.header.cputype
-                                    == goblin::mach::cputype::CPU_TYPE_X86_64
-                                {
+                                if macho.header.cputype == goblin::mach::cputype::CPU_TYPE_X86_64 {
                                     selected = Some(i);
                                     break;
                                 }
                                 #[cfg(target_arch = "aarch64")]
-                                if macho.header.cputype == goblin::mach::cputype::CPU_TYPE_ARM64
-                                {
+                                if macho.header.cputype == goblin::mach::cputype::CPU_TYPE_ARM64 {
                                     selected = Some(i);
                                     break;
                                 }
@@ -314,17 +311,18 @@ impl DependencyAnalyzer {
                 let root_str = self.root.display().to_string();
                 let root_str = root_str.strip_suffix("/").unwrap_or(&root_str);
                 let pattern = format!("{}/etc/ld-musl-*.path", root_str);
-                for entry in glob::glob(&pattern).expect("invalid glob pattern") {
-                    if let Ok(entry) = entry {
-                        let content = fs::read_to_string(&entry)?;
-                        for line in content.lines() {
-                            let line_stripped = line.trim();
-                            if !line_stripped.is_empty() {
-                                self.conf_ld_paths
-                                    .push(root_str.to_string() + line_stripped);
-                            }
+                if let Some(entry) = glob::glob(&pattern)
+                    .expect("invalid glob pattern")
+                    .flatten()
+                    .next()
+                {
+                    let content = fs::read_to_string(&entry)?;
+                    for line in content.lines() {
+                        let line_stripped = line.trim();
+                        if !line_stripped.is_empty() {
+                            self.conf_ld_paths
+                                .push(root_str.to_string() + line_stripped);
                         }
-                        break;
                     }
                 }
                 // default ld paths
@@ -445,8 +443,7 @@ impl DependencyAnalyzer {
 
         // 1. Application directory
         if let Some(app_dir) = dylib_path.parent() {
-            self.env_ld_paths
-                .push(app_dir.display().to_string());
+            self.env_ld_paths.push(app_dir.display().to_string());
         }
 
         // 2-4. System directories (relative to root)
@@ -593,11 +590,7 @@ impl DependencyAnalyzer {
     /// 2. System directories (from conf_ld_paths)
     /// 3. PATH directories (from conf_ld_paths)
     /// 4. Additional user-provided paths
-    fn find_pe_library(
-        &self,
-        dylib: &impl InspectDylib,
-        lib_name: &str,
-    ) -> Result<Library, Error> {
+    fn find_pe_library(&self, dylib: &impl InspectDylib, lib_name: &str) -> Result<Library, Error> {
         let candidates: Vec<PathBuf> = self
             .env_ld_paths
             .iter()
@@ -651,11 +644,7 @@ impl DependencyAnalyzer {
                             if dylib.compatible(&obj) {
                                 Some((
                                     self.read_rpath(macho, lib_path)?,
-                                    macho
-                                        .libraries()
-                                        .iter()
-                                        .map(ToString::to_string)
-                                        .collect(),
+                                    macho.libraries().iter().map(ToString::to_string).collect(),
                                 ))
                             } else {
                                 None

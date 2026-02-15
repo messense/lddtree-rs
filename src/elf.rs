@@ -22,7 +22,7 @@ impl InspectDylib for Elf<'_> {
     }
 
     fn interpreter(&self) -> Option<&str> {
-        self.interpreter.clone()
+        self.interpreter
     }
 
     /// See if two ELFs are compatible
