@@ -672,7 +672,17 @@ impl DependencyAnalyzer {
                 candidates.push(path.join(rest));
             }
         } else if let Some(resolved) = self.resolve_macho_path(lib_name, loader_path) {
-            // @executable_path/..., @loader_path/..., or absolute path
+            // @executable_path/..., @loader_path/..., or absolute path.
+            // For absolute paths, also probe through the sysroot so that a custom
+            // root (e.g., cross-compilation SDK) is searched instead of / on the host.
+            if resolved.is_absolute() {
+                if let Ok(relative) = resolved.strip_prefix("/") {
+                    let sysroot_path = self.root.join(relative);
+                    if sysroot_path != resolved {
+                        candidates.push(sysroot_path);
+                    }
+                }
+            }
             candidates.push(resolved);
 
             // 4. DYLD_FALLBACK_LIBRARY_PATH — for non-@rpath install names, search
@@ -882,7 +892,7 @@ fn find_file_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
     // Fast path: try exact match first (also handles case-insensitive filesystems
     // like macOS HFS+ and Windows NTFS natively)
     let exact = dir.join(name);
-    if exact.exists() {
+    if exact.is_file() {
         return Some(exact);
     }
     // Slow path: scan directory entries for case-insensitive match.
@@ -896,7 +906,10 @@ fn find_file_case_insensitive(dir: &Path, name: &str) -> Option<PathBuf> {
     for entry in entries.flatten() {
         if let Some(file_name) = entry.file_name().to_str() {
             if file_name.to_lowercase() == name_lower {
-                return Some(entry.path());
+                let path = entry.path();
+                if path.is_file() {
+                    return Some(path);
+                }
             }
         }
     }

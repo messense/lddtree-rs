@@ -14,7 +14,11 @@ impl InspectDylib for MachO<'_> {
         // goblin always add `self` or dylib id as a needed library, so we need to remove it, see
         // https://github.com/m4b/goblin/blob/6fdaffdc411bacd5dd7095dc93cec66302ca2575/src/mach/mod.rs#L174
         // https://github.com/m4b/goblin/blob/6fdaffdc411bacd5dd7095dc93cec66302ca2575/src/mach/mod.rs#L231-L235
-        self.libs[1..].to_vec()
+        if self.libs.len() <= 1 {
+            Vec::new()
+        } else {
+            self.libs[1..].to_vec()
+        }
     }
 
     fn interpreter(&self) -> Option<&str> {

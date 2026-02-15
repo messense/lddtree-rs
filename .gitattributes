@@ -1,0 +1,4 @@
+# Mark binary test fixtures to prevent line-ending corruption
+tests/test.macho binary
+tests/test.pe binary
+tests/test.elf binary
