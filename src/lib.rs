@@ -287,26 +287,31 @@ impl DependencyAnalyzer {
         }
 
         let interpreter = dylib.interpreter().map(|interp| interp.to_string());
-        if let Some(ref interp) = interpreter
-            && !libraries.contains_key(interp)
-        {
+        if let Some(ref interp) = interpreter {
             let interp_path = self.root.join(interp.strip_prefix('/').unwrap_or(interp));
             let interp_name = interp_path
                 .file_name()
                 .expect("missing filename")
                 .to_str()
                 .expect("Filename isn't valid Unicode");
-            let interp_realpath = fs::canonicalize(PathBuf::from(&interp_path)).ok();
-            libraries.insert(
-                interp.to_string(),
-                Library {
-                    name: interp_name.to_string(),
-                    path: interp_path,
-                    realpath: interp_realpath,
-                    needed: Vec::new(),
-                    rpath: Vec::new(),
-                },
-            );
+            // Key the interpreter by its soname (basename), like pax-utils'
+            // lddtree. On glibc the dynamic loader is also reachable via
+            // DT_NEEDED (libc.so.6 lists e.g. "ld-linux-aarch64.so.1"), and
+            // keying by the full interpreter path would record the same file
+            // twice under two different keys.
+            if !libraries.contains_key(interp) && !libraries.contains_key(interp_name) {
+                let interp_realpath = fs::canonicalize(PathBuf::from(&interp_path)).ok();
+                libraries.insert(
+                    interp_name.to_string(),
+                    Library {
+                        name: interp_name.to_string(),
+                        path: interp_path,
+                        realpath: interp_realpath,
+                        needed: Vec::new(),
+                        rpath: Vec::new(),
+                    },
+                );
+            }
         }
         let dep_tree = DependencyTree {
             interpreter,

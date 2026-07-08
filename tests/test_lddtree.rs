@@ -18,6 +18,20 @@ fn test_elf() {
             "libc.so.6",
         ]
     );
+    // All directly needed libraries must appear in the dependency map
+    for name in &deps.needed {
+        assert!(
+            deps.libraries.contains_key(name.as_str()),
+            "missing library: {name}"
+        );
+    }
+    // The interpreter is keyed by its soname (basename), not its full path.
+    // Keying by full path duplicated the dynamic loader on aarch64 glibc
+    // hosts, where it is also reachable via DT_NEEDED (issue #19).
+    assert!(deps.libraries.contains_key("ld-linux-aarch64.so.1"));
+    assert!(!deps.libraries.contains_key("/lib/ld-linux-aarch64.so.1"));
+    // 5 direct deps + the interpreter. On aarch64 glibc hosts transitive
+    // deps are found on disk, but they resolve to the same 6 names.
     assert_eq!(deps.libraries.len(), 6);
 }
 
