@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use lddtree::{DependencyAnalyzer, Library};
@@ -17,9 +17,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         let analyzer = DependencyAnalyzer::new(root).library_paths(lib_paths);
         let deps = analyzer.analyze(pathname)?;
         if let Some(interp) = deps.interpreter {
+            // The interpreter is keyed by its soname (basename) in `libraries`
+            let interp_name = Path::new(&interp)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&interp);
             if let Some(path) = deps
                 .libraries
-                .get(&interp)
+                .get(interp_name)
                 .and_then(|lib| lib.realpath.as_ref())
             {
                 println!("{} => {}", interp, path.display());
